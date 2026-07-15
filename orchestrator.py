@@ -40,6 +40,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = p.add_subparsers(dest="command", required=True)
 
+    # ---- run (the one command) ------------------------------------------
+    r = sub.add_parser("run",
+                       help="Fine-tune AND serve in one shot. The main command.")
+    r.add_argument("--model", required=True,
+                   help="Model id/alias/path (phi-3, gpt2, ./ckpt, ollama://...).")
+    r.add_argument("--data", "--dataset", dest="data", required=True,
+                   help="Local .jsonl or HF dataset id.")
+    r.add_argument("--epochs", type=int, default=3)
+    r.add_argument("--quant", default="none", choices=["none", "8bit", "4bit"])
+    r.add_argument("--out", default="./checkpoints")
+    r.add_argument("--port", type=int, default=8000)
+    r.add_argument("--no-fast", action="store_true",
+                   help="Disable the fast-path optimization stack.")
+    r.add_argument("--no-serve", action="store_true",
+                   help="Train only; skip serving.")
+
+    # ---- bench -----------------------------------------------------------
+    bch = sub.add_parser("bench",
+                         help="Benchmark the optimization stack (real tokens/sec).")
+    bch.add_argument("--model", default="gpt2")
+    bch.add_argument("--data", "--dataset", dest="data",
+                     default="examples/my-data.jsonl")
+    bch.add_argument("--steps", type=int, default=8)
+    bch.add_argument("--max-len", type=int, default=512)
+
     # ---- train -----------------------------------------------------------
     t = sub.add_parser("train", help="Fine-tune / train a model.")
     t.add_argument("--model", required=True,
@@ -105,6 +130,56 @@ def build_parser() -> argparse.ArgumentParser:
 # --------------------------------------------------------------------------- #
 # Section 2. Command handlers
 # --------------------------------------------------------------------------- #
+def cmd_run(a: argparse.Namespace) -> int:
+    """The one command: fine-tune, then serve. Optimized by default."""
+    from orchestrator import fast
+    banner("RUN  (fine-tune + serve)")
+
+    device, engine = fast.pick_device(), fast.pick_engine()
+    cfg = fast.OptConfig() if not a.no_fast else fast.OptConfig(
+        packing=False, bf16=False, compile=False, grad_checkpoint=False,
+        lora=False, prefetch=False, flash_attn=False)
+    log(f"Hardware: device={device}  engine={engine}")
+    log(f"Fast-path: {cfg.summary()}")
+
+    est = cost.estimate_training(a.model, a.data, a.epochs, quant=a.quant)
+    cost.print_estimate(est)
+
+    monitor.start_exporter()
+    ckpt = train.run(
+        model=a.model, dataset=a.data, epochs=a.epochs,
+        strategy="single", quant=a.quant, out=a.out, opt=cfg,
+    )
+    log(f"✓ Fine-tune complete: {ckpt}")
+
+    if a.no_serve:
+        log(f"Serve later with:  python orchestrator.py serve --model {ckpt}")
+        return 0
+
+    log(f"→ Serving on http://localhost:{a.port} (Ctrl-C to stop)")
+    return serve.run(model=ckpt, quant=a.quant, port=a.port, host="0.0.0.0",
+                     tensor_parallel=1, max_model_len=2048,
+                     continuous_batching=True)
+
+
+def cmd_bench(a: argparse.Namespace) -> int:
+    from orchestrator import fast
+    banner("BENCHMARK  (optimization stack, real tokens/sec)")
+    results = fast.benchmark_stack(a.model, a.data, max_len=a.max_len, steps=a.steps)
+    print()
+    log("=" * 60)
+    log(f"{'stage':34s} {'tok/s':>9s} {'speedup':>9s}")
+    log("-" * 60)
+    for r in results:
+        log(f"{r['name']:34s} {r['tokens_per_s']:9.0f} {r['speedup']:8.2f}x")
+    if results:
+        total = results[-1]["speedup"]
+        log("=" * 60)
+        log(f"Full stack is {total:.2f}x faster than the fp32/padded baseline "
+            f"on this hardware.")
+    return 0
+
+
 def cmd_train(a: argparse.Namespace) -> int:
     banner("TRAIN")
     # 1) Cost first -- never launch a run blind.
@@ -171,6 +246,8 @@ def cmd_rdma(a: argparse.Namespace) -> int:
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     handler = {
+        "run": cmd_run,
+        "bench": cmd_bench,
         "train": cmd_train,
         "serve": cmd_serve,
         "cost": cmd_cost,

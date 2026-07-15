@@ -138,15 +138,19 @@ def select_serving_backend(model_id: str):
             log("GGUF found but llama-cpp-python not installed. "
                 "Install with: pip install llama-cpp-python")
 
-    # vLLM: works on CPU (via Ray) or GPU (CUDA)
+    # vLLM: its real value is GPU continuous batching. Only auto-select it when
+    # CUDA is present -- on a CPU/MPS laptop it's slow to boot and transformers
+    # gives far better UX. (Force it anywhere with --backend vllm.)
     if have("vllm") and not spec.is_gguf:
         try:
-            log("vLLM available (CPU or CUDA backend auto-selected)")
-            return "vllm", spec
+            import torch
+            if torch.cuda.is_available():
+                log("vLLM + CUDA available: continuous-batching backend selected")
+                return "vllm", spec
         except Exception:
             pass
 
-    # transformers: fallback for any device (CPU/GPU/MPS)
+    # transformers: fast, reliable fallback for any device (CPU/GPU/MPS)
     if have("torch") and have("transformers"):
         return "transformers", spec
 

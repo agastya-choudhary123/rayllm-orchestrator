@@ -32,7 +32,7 @@ from .util import gpu_count, have, log, resolve_model
 def run(model: str, dataset: str, epochs: int, strategy: str, quant: str,
         out: str, num_workers: int = 0, lr: float = 2e-5, batch_size: int = 4,
         grad_accum: int = 4, max_len: int = 1024, use_lora: bool | None = None,
-        resume: bool = True) -> str:
+        resume: bool = True, opt=None) -> str:
     if not (have("torch") and have("transformers")):
         raise RuntimeError(
             "Training requires torch + transformers. Install with:\n"
@@ -42,14 +42,18 @@ def run(model: str, dataset: str, epochs: int, strategy: str, quant: str,
     ckpt_dir = os.path.join(out, m["alias"])
     os.makedirs(ckpt_dir, exist_ok=True)
     workers = num_workers or max(1, gpu_count())
-    # QLoRA is the default when quantizing; full fine-tune otherwise.
+    # Fast-path config (packing/bf16/compile/...). Defaults to all-on.
+    from . import fast
+    if opt is None:
+        opt = fast.OptConfig()
+    # QLoRA is the default when quantizing; else follow the fast-path LoRA flag.
     if use_lora is None:
-        use_lora = quant in ("4bit", "8bit")
+        use_lora = quant in ("4bit", "8bit") or opt.lora
 
     cfg = dict(hf=m["hf"], dataset=dataset, epochs=epochs, quant=quant,
                lr=lr, batch_size=batch_size, grad_accum=grad_accum,
                max_len=max_len, use_lora=use_lora, out=ckpt_dir,
-               params_b=m["params_b"], resume=resume)
+               params_b=m["params_b"], resume=resume, opt=opt)
 
     log(f"Strategy={strategy} workers={workers} quant={quant} "
         f"lora={use_lora} gpus={gpu_count()}")
@@ -112,19 +116,33 @@ def _lora_targets(model) -> list[str]:
 # --------------------------------------------------------------------------- #
 def _train_single(cfg: dict, ckpt_dir: str):
     import torch
+    from . import fast
 
-    device = ("cuda" if gpu_count() > 0 else
-              "mps" if have("torch") and torch.backends.mps.is_available() else
-              "cpu")
-    log(f"Device: {device}")
+    o = cfg["opt"]
+    device = fast.pick_device()
+    log(f"Device: {device}  | fast-path: {o.summary()}")
 
     model, tok = build_model_and_tokenizer(cfg, device)
+    # Apply compile / grad-checkpoint / flash to the model.
+    model = fast.optimize_model(model, o, device)
+
     records = data.load_records(cfg["dataset"])
     n_tokens = data.count_tokens(records, tok)
-    log(f"Dataset: {len(records)} examples, {n_tokens:,} tokens")
 
-    loader = data.build_dataloader(records, tok, batch_size=cfg["batch_size"],
-                                   max_len=cfg["max_len"])
+    # Sequence packing: the project-specific throughput win on short examples.
+    if o.packing:
+        stats = data.packing_stats(records, tok, cfg["max_len"])
+        log(f"Dataset: {len(records)} examples, {n_tokens:,} tokens | "
+            f"packing reclaims ~{stats['waste_naive_pct']:.0f}% padding waste "
+            f"(~{stats['speedup_vs_naive']:.1f}x fewer FLOPs)")
+        loader = data.build_packed_dataloader(records, tok,
+                                              batch_size=cfg["batch_size"],
+                                              max_len=cfg["max_len"])
+    else:
+        log(f"Dataset: {len(records)} examples, {n_tokens:,} tokens")
+        loader = data.build_dataloader(records, tok, batch_size=cfg["batch_size"],
+                                       max_len=cfg["max_len"])
+
     opt = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad], lr=cfg["lr"])
     total_steps = math.ceil(len(loader) / cfg["grad_accum"]) * cfg["epochs"]
@@ -141,10 +159,11 @@ def _train_single(cfg: dict, ckpt_dir: str):
     for epoch in range(start_epoch, cfg["epochs"]):
         running, seen_tokens, t0 = 0.0, 0, time.time()
         opt.zero_grad()
-        for i, batch in enumerate(loader):
-            batch = {k: v.to(device) for k, v in batch.items()}
-            out = model(**batch)
-            loss = out.loss / cfg["grad_accum"]
+        # Async prefetch overlaps H2D copy with compute (GPU never stalls).
+        for i, batch in enumerate(fast.Prefetcher(loader, device, o.prefetch)):
+            with fast.autocast_ctx(o, device):   # bf16 mixed precision
+                out = model(**batch)
+                loss = out.loss / cfg["grad_accum"]
             loss.backward()
             running += out.loss.item()
             seen_tokens += int(batch["attention_mask"].sum().item())
@@ -256,20 +275,27 @@ def _maybe_resume(model, opt, ckpt_dir) -> int:
     return last + 1
 
 
+def _unwrap(model):
+    """Strip torch.compile (_orig_mod) and DDP/FSDP (.module) wrappers."""
+    m = model
+    m = getattr(m, "_orig_mod", m)          # torch.compile
+    m = getattr(m, "module", m)             # DDP / FSDP
+    m = getattr(m, "_orig_mod", m)          # compile-inside-wrapper
+    return m
+
+
 def _state_dict(model):
-    m = model.module if hasattr(model, "module") else model
-    return m.state_dict()
+    return _unwrap(model).state_dict()
 
 
 def _load_state_dict(model, sd):
-    m = model.module if hasattr(model, "module") else model
-    m.load_state_dict(sd, strict=False)
+    _unwrap(model).load_state_dict(sd, strict=False)
 
 
 def _save_final(model, tok, ckpt_dir, cfg):
     """Write a plain HF checkpoint the serving layer can load directly.
     LoRA adapters are merged into the base weights first."""
-    m = model.module if hasattr(model, "module") else model
+    m = _unwrap(model)
     if cfg["use_lora"] and hasattr(m, "merge_and_unload"):
         log("Merging LoRA adapters into base weights...")
         m = m.merge_and_unload()

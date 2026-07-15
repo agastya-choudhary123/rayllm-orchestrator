@@ -24,6 +24,22 @@ from . import models, monitor
 from .util import gpu_count, have, log
 
 
+def _clamp_ctx(model: str, requested: int) -> int:
+    """Clamp requested context length to the model's real max positions."""
+    cfg_path = os.path.join(model, "config.json") if os.path.isdir(model) else None
+    if cfg_path and os.path.exists(cfg_path):
+        try:
+            with open(cfg_path) as f:
+                c = json.load(f)
+            real = c.get("max_position_embeddings") or c.get("n_positions")
+            if real and requested > real:
+                log(f"Clamping max_model_len {requested} -> {real} (model limit)")
+                return int(real)
+        except Exception:
+            pass
+    return requested
+
+
 def _load_manifest(model: str) -> dict:
     path = os.path.join(model, "orchestrator.json")
     if os.path.isdir(model) and os.path.exists(path):
@@ -304,6 +320,9 @@ def _serve_llama_cpp(model_path: str, port: int, host: str) -> int:
 def _serve_vllm(model, quant, port, host, tp, max_model_len) -> int:
     import subprocess
     import sys
+    # Clamp requested context to the model's real max positions so vLLM never
+    # errors out (e.g. gpt2 is 1024). Reads config.json if present.
+    max_model_len = _clamp_ctx(model, max_model_len)
     qflag = []
     if quant == "4bit":
         qflag = ["--quantization", "bitsandbytes", "--load-format", "bitsandbytes"]
