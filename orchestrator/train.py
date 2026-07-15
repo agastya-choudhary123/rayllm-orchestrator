@@ -58,6 +58,13 @@ def run(model: str, dataset: str, epochs: int, strategy: str, quant: str,
     log(f"Strategy={strategy} workers={workers} quant={quant} "
         f"lora={use_lora} gpus={gpu_count()}")
 
+    # Apple-Silicon-native path: MLX is the fastest, most memory-safe trainer on
+    # a Mac (4-bit + LoRA keeps an 8B at ~5 GB). Used automatically when engine
+    # resolves to 'mlx' and the model is MLX-loadable.
+    from . import backends_mlx, fast
+    if fast.pick_engine() == "mlx" and backends_mlx.is_available() and _mlx_ok(m["hf"]):
+        return _train_mlx(m, dataset, epochs, ckpt_dir, opt)
+
     if strategy in ("fsdp-ray", "deepspeed-ray") and have("ray") and gpu_count() > 1:
         _train_ray(cfg, strategy, workers, ckpt_dir)
     else:
@@ -66,6 +73,36 @@ def run(model: str, dataset: str, epochs: int, strategy: str, quant: str,
         _train_single(cfg, ckpt_dir)
 
     _write_manifest(ckpt_dir, m, quant, strategy)
+    return ckpt_dir
+
+
+def _mlx_ok(model_id: str) -> bool:
+    """True if we should use the MLX trainer for this model.
+
+    Prefer already-4-bit MLX repos (memory-safe on 16 GB). Small models can be
+    converted on the fly; large raw HF models are left to the torch path to
+    avoid a full-precision conversion that could exhaust unified memory.
+    """
+    mid = model_id.lower()
+    if "mlx" in mid:
+        return True
+    return resolve_model(model_id)["params_b"] <= 4
+
+
+def _train_mlx(m, dataset, epochs, ckpt_dir, opt):
+    """Apple-Silicon LoRA fine-tune via mlx-lm (see backends_mlx.train_mlx)."""
+    from . import backends_mlx, data, monitor
+    records = data.load_records(dataset)
+    log(f"[mlx] dataset: {len(records)} examples")
+
+    def progress(step=None, loss=None, throughput_tok_s=None):
+        monitor.set_progress(step=step, loss=loss,
+                             throughput_tok_s=throughput_tok_s)
+
+    backends_mlx.train_mlx(
+        m["hf"], records, ckpt_dir, epochs=epochs,
+        batch_size=1, max_seq_len=opt.__dict__.get("max_seq_len", 1024),
+        progress=progress)
     return ckpt_dir
 
 

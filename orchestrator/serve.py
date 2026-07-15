@@ -54,6 +54,16 @@ def run(model: str, quant: str, port: int, host: str, tensor_parallel: int,
     log(f"Serving {model} | manifest: base={manifest.get('base_model')} "
         f"quant={manifest.get('quant','none')}")
 
+    # MLX-LoRA checkpoints (from the Apple-Silicon trainer) carry a manifest that
+    # tells us the base model + adapter path -- serve them via MLX directly.
+    if backend_override in (None, "mlx"):
+        from . import backends_mlx
+        mlx_manifest = backends_mlx.load_manifest(model)
+        if backend_override == "mlx" or mlx_manifest.get("format") == "mlx-lora" \
+                or ("mlx" in model.lower() and backends_mlx.is_available()):
+            if backends_mlx.is_available():
+                return _serve_mlx(model, port, host, mlx_manifest)
+
     if backend_override:
         backend, spec = backend_override, models.ModelSpec(model)
         log(f"Backend override: {backend}")
@@ -164,16 +174,23 @@ def _serve_ollama(model: str, port: int, host: str) -> int:
 # --------------------------------------------------------------------------- #
 # MLX backend (Apple Silicon native)
 # --------------------------------------------------------------------------- #
-def _serve_mlx(model_path: str, port: int, host: str) -> int:
-    """Serve via MLX (Apple Silicon native, fastest on M-series Macs)."""
-    try:
-        from . import backends_mlx
-        engine = backends_mlx.load_for_serving_mlx(model_path)
-    except ImportError:
-        log("MLX not installed. Install with: pip install mlx")
-        return 1
+def _serve_mlx(model_path: str, port: int, host: str, manifest: dict = None) -> int:
+    """Serve via MLX (Apple Silicon native). Handles both a plain MLX model id
+    and an MLX-LoRA checkpoint (base model + adapters) produced by our trainer."""
+    from . import backends_mlx
+    manifest = manifest or {}
+    if manifest.get("format") == "mlx-lora":
+        base = manifest["base_model"]
+        adapters = manifest.get("adapter_path", model_path)
+    else:
+        base, adapters = model_path, None
+    engine = backends_mlx.MLXEngine(base, adapters)
+    disp_model = manifest.get("base_model", model_path)
 
-    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    # Single-threaded on purpose: MLX streams are thread-local, so generation
+    # must run on the server's main thread. A local single-model server serves
+    # requests sequentially anyway (the GPU serializes them).
+    from http.server import BaseHTTPRequestHandler, HTTPServer
 
     class MLXServer(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -227,8 +244,8 @@ def _serve_mlx(model_path: str, port: int, host: str) -> int:
                 "choices": [{"index": 0, "text": text, "finish_reason": "stop"}]
             })
 
-    srv = ThreadingHTTPServer((host, port), MLXServer)
-    log(f"MLX server on http://{host}:{port} (Apple Silicon optimized)")
+    srv = HTTPServer((host, port), MLXServer)
+    log(f"MLX server on http://{host}:{port} (Apple Silicon native)")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

@@ -43,8 +43,9 @@ def build_parser() -> argparse.ArgumentParser:
     # ---- run (the one command) ------------------------------------------
     r = sub.add_parser("run",
                        help="Fine-tune AND serve in one shot. The main command.")
-    r.add_argument("--model", required=True,
-                   help="Model id/alias/path (phi-3, gpt2, ./ckpt, ollama://...).")
+    r.add_argument("--model", default="mlx-community/Qwen3-8B-4bit",
+                   help="Model id/alias/path. Default: a 4-bit 8B that trains + "
+                        "serves in ~5 GB on Apple Silicon.")
     r.add_argument("--data", "--dataset", dest="data", required=True,
                    help="Local .jsonl or HF dataset id.")
     r.add_argument("--epochs", type=int, default=3)
