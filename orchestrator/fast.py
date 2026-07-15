@@ -37,17 +37,28 @@ from .util import have, log
 
 @dataclass
 class OptConfig:
-    packing: bool = True          # sequence packing (project-specific big win)
-    bf16: bool = True             # mixed precision
-    compile: bool = True          # torch.compile kernel fusion
-    grad_checkpoint: bool = True  # activation checkpointing
-    lora: bool = True             # parameter-efficient fine-tuning
-    prefetch: bool = True         # async data pipeline
-    flash_attn: bool = True       # SDPA / flash attention when available
+    # Data strategy is adaptive: 'auto' analyzes the dataset's length
+    # distribution and picks pack / bucket / pad to minimize wasted padding
+    # FLOPs -- generalizes the win to ANY dataset shape without regression.
+    data_strategy: str = "auto"   # auto | pack | bucket | pad
+    bf16: bool = True             # mixed precision (general)
+    # Activation checkpointing SAVES MEMORY at a THROUGHPUT COST (recompute).
+    # It's a memory-pressure tool, not a speed tool, so it's off by default and
+    # auto-enabled only for large models that would otherwise OOM.
+    grad_checkpoint: bool = False
+    lora: bool = True             # parameter-efficient fine-tuning (general)
+    prefetch: bool = True         # async data pipeline (general)
+    flash_attn: bool = True       # SDPA / flash attention (general)
+    # torch.compile is intentionally omitted from the default stack: its MPS
+    # backend is broken in current torch and we can't verify the CUDA path on
+    # this hardware, so we don't ship it as a claim. See notes in optimize_model.
+    compile: bool = False
 
     def summary(self) -> str:
-        on = [k for k, v in self.__dict__.items() if v]
-        return ", ".join(on) or "none"
+        parts = [f"data={self.data_strategy}"]
+        parts += [k for k in ("bf16", "grad_checkpoint", "lora", "prefetch",
+                              "flash_attn", "compile") if getattr(self, k)]
+        return ", ".join(parts)
 
 
 def pick_device() -> str:
@@ -185,28 +196,28 @@ def benchmark_stack(model_id: str, dataset: str, max_len: int = 512,
     while len(records) < steps * batch_size * 4:
         records = records + records
 
-    stats = data.packing_stats(records, tok, max_len)
-    log(f"Packing analysis: {stats['examples']} examples, "
-        f"{stats['waste_naive_pct']:.0f}% wasted on padding without packing, "
-        f"theoretical packing speedup {stats['speedup_vs_naive']:.1f}x")
+    info = data.analyze_lengths(records, tok, max_len, batch_size)
+    log(f"Dataset shape: {info['examples']} examples, p50={info['p50_len']} "
+        f"p90={info['p90_len']} tokens")
+    log(f"Adaptive choice: {info['strategy'].upper()} -- {info['reason']}")
 
     configs = [
-        ("baseline (fp32, padded)", OptConfig(packing=False, bf16=False, compile=False,
-                                              grad_checkpoint=False, lora=False,
-                                              prefetch=False, flash_attn=False)),
-        ("+ bf16", OptConfig(packing=False, compile=False, grad_checkpoint=False,
-                             lora=False, prefetch=False, flash_attn=False)),
-        ("+ packing", OptConfig(compile=False, grad_checkpoint=False, lora=False,
-                                prefetch=False, flash_attn=False)),
-        ("+ grad-checkpoint", OptConfig(compile=False, lora=False, prefetch=False,
-                                        flash_attn=False)),
-        ("+ prefetch + flash", OptConfig(compile=False, lora=False)),
-        ("+ LoRA", OptConfig(compile=False)),
-        ("+ torch.compile (full stack)", OptConfig()),
+        ("baseline (fp32, naive pad)", OptConfig(data_strategy="pad", bf16=False,
+                                                 lora=False, prefetch=False,
+                                                 flash_attn=False)),
+        ("+ bf16", OptConfig(data_strategy="pad", lora=False, prefetch=False,
+                             flash_attn=False)),
+        (f"+ adaptive data ({info['strategy']})",
+         OptConfig(lora=False, prefetch=False, flash_attn=False)),
+        ("+ flash-attn (SDPA)", OptConfig(lora=False, prefetch=False)),
+        ("+ LoRA (full stack)", OptConfig(prefetch=False)),
+        # Shown separately -- a memory saver that costs throughput, not a speedup.
+        ("[grad-checkpoint: memory]", OptConfig(grad_checkpoint=True, prefetch=False)),
     ]
 
     results = []
     base_tps = None
+    log("  (throughput = USEFUL tokens/sec, i.e. non-padding tokens)")
     for name, cfg in configs:
         tps = _measure_one(model_id, records, tok, cfg, device, max_len,
                            steps, batch_size)
@@ -214,7 +225,7 @@ def benchmark_stack(model_id: str, dataset: str, max_len: int = 512,
             base_tps = tps
         results.append({"name": name, "tokens_per_s": tps,
                         "speedup": tps / base_tps if base_tps else 1.0})
-        log(f"  {name:34s} {tps:8.0f} tok/s   {tps/base_tps:5.2f}x")
+        log(f"  {name:32s} {tps:8.0f} tok/s   {tps/base_tps:5.2f}x")
     return results
 
 
@@ -239,35 +250,36 @@ def _measure_one(model_id, records, tok, cfg, device, max_len, steps, batch_size
     model.train()
 
     from . import data as _d
-    if cfg.packing:
-        loader = _d.build_packed_dataloader(records, tok, batch_size, max_len)
-    else:
-        loader = _d.build_dataloader(records, tok, batch_size, max_len)
+    loader, _ = _d.build_adaptive_dataloader(records, tok, batch_size, max_len,
+                                             strategy=cfg.data_strategy)
 
     opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=1e-4)
-    prefetch = Prefetcher(loader, device, enabled=cfg.prefetch)
 
-    # Warmup (compile/first-kernel costs excluded from timing).
-    it = iter(prefetch)
+    # For the microbenchmark we move batches inline (enabled=False): the async
+    # prefetcher's benefit is hiding data-load latency, which an in-memory demo
+    # dataset doesn't have, and its overlap produces unstable sub-ms timings
+    # here. Prefetch is measured where it matters -- the real training loop.
+    # First batch = warmup (untimed); remaining batches are timed.
+    it = iter(Prefetcher(loader, device, enabled=False))
     try:
         warm = next(it)
-        with autocast_ctx(cfg, device):
-            loss = model(**warm).loss
-        loss.backward()
-        opt.zero_grad()
     except StopIteration:
         return 0.0
+    with autocast_ctx(cfg, device):
+        model(**warm).loss.backward()
+    opt.zero_grad()
     _sync(device)
 
     t0 = time.time()
     tokens = 0
     done = 0
-    for batch in prefetch:
+    for batch in it:
         with autocast_ctx(cfg, device):
             out = model(**batch)
         out.loss.backward()
         opt.step()
         opt.zero_grad()
+        # 'useful' throughput = real (non-padding) tokens pushed through.
         tokens += int(batch["attention_mask"].sum().item())
         done += 1
         if done >= steps:
@@ -276,7 +288,10 @@ def _measure_one(model_id, records, tok, cfg, device, max_len, steps, batch_size
     dt = time.time() - t0
     del model
     _empty_cache(device)
-    return tokens / dt if dt > 0 else 0.0
+    # Guard against a too-short run producing an unstable rate.
+    if dt < 1e-3 or done == 0:
+        return 0.0
+    return tokens / dt
 
 
 def _sync(device):

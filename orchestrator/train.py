@@ -129,19 +129,13 @@ def _train_single(cfg: dict, ckpt_dir: str):
     records = data.load_records(cfg["dataset"])
     n_tokens = data.count_tokens(records, tok)
 
-    # Sequence packing: the project-specific throughput win on short examples.
-    if o.packing:
-        stats = data.packing_stats(records, tok, cfg["max_len"])
-        log(f"Dataset: {len(records)} examples, {n_tokens:,} tokens | "
-            f"packing reclaims ~{stats['waste_naive_pct']:.0f}% padding waste "
-            f"(~{stats['speedup_vs_naive']:.1f}x fewer FLOPs)")
-        loader = data.build_packed_dataloader(records, tok,
-                                              batch_size=cfg["batch_size"],
-                                              max_len=cfg["max_len"])
-    else:
-        log(f"Dataset: {len(records)} examples, {n_tokens:,} tokens")
-        loader = data.build_dataloader(records, tok, batch_size=cfg["batch_size"],
-                                       max_len=cfg["max_len"])
+    # Adaptive data strategy: analyze the length distribution and pick pack /
+    # bucket / pad to minimize wasted padding-FLOPs. Generalizes to any dataset.
+    loader, dinfo = data.build_adaptive_dataloader(
+        records, tok, batch_size=cfg["batch_size"], max_len=cfg["max_len"],
+        strategy=o.data_strategy)
+    log(f"Dataset: {len(records)} examples, {n_tokens:,} tokens")
+    log(f"Data strategy: {dinfo['strategy'].upper()} -- {dinfo.get('reason','')}")
 
     opt = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad], lr=cfg["lr"])

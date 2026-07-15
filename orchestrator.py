@@ -172,11 +172,11 @@ def cmd_bench(a: argparse.Namespace) -> int:
     log("-" * 60)
     for r in results:
         log(f"{r['name']:34s} {r['tokens_per_s']:9.0f} {r['speedup']:8.2f}x")
-    if results:
-        total = results[-1]["speedup"]
+    stack = [r for r in results if "full stack" in r["name"]]
+    if stack:
         log("=" * 60)
-        log(f"Full stack is {total:.2f}x faster than the fp32/padded baseline "
-            f"on this hardware.")
+        log(f"Full stack is {stack[0]['speedup']:.2f}x faster than the "
+            f"fp32/naive-padded baseline on this hardware (useful tokens/sec).")
     return 0
 
 
