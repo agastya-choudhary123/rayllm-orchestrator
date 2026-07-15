@@ -1,0 +1,6 @@
+.venv/
+checkpoints/
+checkpoints-lora/
+__pycache__/
+*.pyc
+.git/

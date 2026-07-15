@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Checkpoints, models, data -- never commit weights.
+checkpoints/
+*.safetensors
+*.bin
+*.pt
+data/
+*.jsonl
+
+# Secrets -- never commit these.
+.env
+*.key
+*.pem
+secrets.*
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Ray / logs
+ray_results/
+*.log

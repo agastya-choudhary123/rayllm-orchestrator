@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>RayLLM WebGPU</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+        textarea { width: 100%; height: 100px; font-family: monospace; }
+        button { padding: 10px 20px; font-size: 16px; }
+        #output { border: 1px solid #ccc; padding: 10px; margin-top: 10px; min-height: 50px; }
+        .loading { color: #999; }
+    </style>
+</head>
+<body>
+    <h1>🚀 RayLLM WebGPU Inference</h1>
+    <p><strong>Model:</strong> gpt2</p>
+    <p><strong>Runs entirely in your browser</strong> — no server, no network latency.</p>
+
+    <textarea id="prompt" placeholder="Enter your prompt here...">What is machine learning?</textarea>
+    <br><br>
+
+    <label>
+        Max tokens: <input type="number" id="maxTokens" value="64" min="1" max="512">
+    </label>
+    <label>
+        Temperature: <input type="number" id="temperature" value="0.7" min="0" max="2" step="0.1">
+    </label>
+    <br><br>
+
+    <button onclick="generate()">Generate</button>
+    <button onclick="clearOutput()">Clear</button>
+
+    <h3>Output</h3>
+    <div id="output"></div>
+
+    <hr>
+    <p><small>Status: <span id="status">loading model...</span></small></p>
+
+    <script type="module">
+        // transformers.js: ONNX + LLM inference in the browser
+        import { pipeline } from "https://cdn.jsdelivr.net/npm/@xenova/transformers";
+
+        let model = null;
+
+        async function loadModel() {
+            try {
+                console.log("Loading model via transformers.js...");
+                model = await pipeline("text-generation", "Xenova/distilgpt2");
+                document.getElementById("status").textContent = "Model loaded (GPU ready via WebGPU)";
+            } catch (e) {
+                console.error("Model load failed:", e);
+                document.getElementById("status").textContent = "Model load failed: " + e.message;
+            }
+        }
+
+        window.generate = async function() {
+            if (!model) {
+                alert("Model still loading...");
+                return;
+            }
+            const prompt = document.getElementById("prompt").value;
+            const maxTokens = parseInt(document.getElementById("maxTokens").value);
+            const temperature = parseFloat(document.getElementById("temperature").value);
+
+            const output = document.getElementById("output");
+            output.innerHTML = '<p class="loading">Generating...</p>';
+
+            try {
+                const result = await model(prompt, {
+                    max_new_tokens: maxTokens,
+                    temperature: temperature,
+                });
+                output.innerHTML = `<strong>Input:</strong> ${prompt}<br><strong>Output:</strong> ${result[0].generated_text}`;
+            } catch (e) {
+                output.innerHTML = `<p style="color:red;">Error: ${e.message}</p>`;
+            }
+        };
+
+        window.clearOutput = function() {
+            document.getElementById("output").innerHTML = "";
+        };
+
+        // Load model on page load
+        loadModel();
+    </script>
+</body>
+</html>
