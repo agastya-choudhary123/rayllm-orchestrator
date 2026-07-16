@@ -49,7 +49,8 @@ def _load_manifest(model: str) -> dict:
 
 
 def run(model: str, quant: str, port: int, host: str, tensor_parallel: int,
-        max_model_len: int, continuous_batching: bool, backend_override: str = None) -> int:
+        max_model_len: int, continuous_batching: bool, backend_override: str = None,
+        draft_model: str = None) -> int:
     manifest = _load_manifest(model)
     log(f"Serving {model} | manifest: base={manifest.get('base_model')} "
         f"quant={manifest.get('quant','none')}")
@@ -62,7 +63,7 @@ def run(model: str, quant: str, port: int, host: str, tensor_parallel: int,
         if backend_override == "mlx" or mlx_manifest.get("format") == "mlx-lora" \
                 or ("mlx" in model.lower() and backends_mlx.is_available()):
             if backends_mlx.is_available():
-                return _serve_mlx(model, port, host, mlx_manifest)
+                return _serve_mlx(model, port, host, mlx_manifest, draft_model)
 
     if backend_override:
         backend, spec = backend_override, models.ModelSpec(model)
@@ -174,9 +175,11 @@ def _serve_ollama(model: str, port: int, host: str) -> int:
 # --------------------------------------------------------------------------- #
 # MLX backend (Apple Silicon native)
 # --------------------------------------------------------------------------- #
-def _serve_mlx(model_path: str, port: int, host: str, manifest: dict = None) -> int:
+def _serve_mlx(model_path: str, port: int, host: str, manifest: dict = None,
+               draft_model: str = None) -> int:
     """Serve via MLX (Apple Silicon native). Handles both a plain MLX model id
-    and an MLX-LoRA checkpoint (base model + adapters) produced by our trainer."""
+    and an MLX-LoRA checkpoint (base model + adapters) produced by our trainer.
+    Supports streaming (SSE) and speculative decoding (draft_model)."""
     from . import backends_mlx
     manifest = manifest or {}
     if manifest.get("format") == "mlx-lora":
@@ -184,7 +187,7 @@ def _serve_mlx(model_path: str, port: int, host: str, manifest: dict = None) -> 
         adapters = manifest.get("adapter_path", model_path)
     else:
         base, adapters = model_path, None
-    engine = backends_mlx.MLXEngine(base, adapters)
+    engine = backends_mlx.MLXEngine(base, adapters, draft_model=draft_model)
     disp_model = manifest.get("base_model", model_path)
 
     # Single-threaded on purpose: MLX streams are thread-local, so generation
@@ -227,9 +230,15 @@ def _serve_mlx(model_path: str, port: int, host: str, manifest: dict = None) -> 
 
             max_tokens = int(req.get("max_tokens", 128))
             temp = float(req.get("temperature", 0.7))
-            text = engine.generate(prompt, max_tokens, temp)
+            is_chat = self.path == "/v1/chat/completions"
 
-            if self.path == "/v1/chat/completions":
+            # Streaming (OpenAI SSE): tokens are sent as they generate, so the
+            # response feels instant even on a big model.
+            if req.get("stream"):
+                return self._stream(prompt, max_tokens, temp, is_chat)
+
+            text = engine.generate(prompt, max_tokens, temp)
+            if is_chat:
                 return self._json_resp(200, {
                     "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
                     "object": "chat.completion", "created": int(time.time()),
@@ -243,6 +252,36 @@ def _serve_mlx(model_path: str, port: int, host: str, manifest: dict = None) -> 
                 "created": int(time.time()), "model": model_path,
                 "choices": [{"index": 0, "text": text, "finish_reason": "stop"}]
             })
+
+        def _stream(self, prompt, max_tokens, temp, is_chat):
+            cid = f"chatcmpl-{uuid.uuid4().hex[:8]}"
+            obj = "chat.completion.chunk" if is_chat else "text_completion"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+
+            def send(delta, finish=None):
+                if is_chat:
+                    choice = {"index": 0, "delta": ({} if finish else
+                              {"role": "assistant", "content": delta}),
+                              "finish_reason": finish}
+                else:
+                    choice = {"index": 0, "text": delta, "finish_reason": finish}
+                payload = {"id": cid, "object": obj, "created": int(time.time()),
+                           "model": model_path, "choices": [choice]}
+                self.wfile.write(f"data: {json.dumps(payload)}\n\n".encode())
+                self.wfile.flush()
+
+            try:
+                for chunk, _r in engine.stream(prompt, max_tokens, temp):
+                    if chunk:
+                        send(chunk)
+                send("", finish="stop")
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # client disconnected mid-stream
 
     srv = HTTPServer((host, port), MLXServer)
     log(f"MLX server on http://{host}:{port} (Apple Silicon native)")

@@ -49,6 +49,12 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--data", "--dataset", dest="data", required=True,
                    help="Local .jsonl or HF dataset id.")
     r.add_argument("--epochs", type=int, default=3)
+    r.add_argument("--ctx", type=int, default=4096,
+                   help="Context window (max sequence length). Higher fits long "
+                        "examples without truncation; 8192 is the practical max "
+                        "for a 16 GB Mac.")
+    r.add_argument("--max-examples", type=int, default=None,
+                   help="Cap dataset size (keeps laptop training bounded).")
     r.add_argument("--quant", default="none", choices=["none", "8bit", "4bit"])
     r.add_argument("--out", default="./checkpoints")
     r.add_argument("--port", type=int, default=8000)
@@ -56,6 +62,19 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Disable the fast-path optimization stack.")
     r.add_argument("--no-serve", action="store_true",
                    help="Train only; skip serving.")
+
+    # ---- bench-serve -----------------------------------------------------
+    bs = sub.add_parser("bench-serve",
+                        help="Benchmark generation tok/s across model sizes "
+                             "(loads one at a time, frees memory between).")
+    bs.add_argument("--models", nargs="+",
+                    default=["mlx-community/Qwen2.5-0.5B-Instruct-4bit",
+                             "mlx-community/Qwen2.5-3B-Instruct-4bit",
+                             "mlx-community/Qwen3-8B-4bit"],
+                    help="Models to benchmark, smallest first.")
+    bs.add_argument("--max-tokens", type=int, default=80)
+    bs.add_argument("--keep-downloads", action="store_true",
+                    help="Don't delete models downloaded for the benchmark.")
 
     # ---- bench -----------------------------------------------------------
     bch = sub.add_parser("bench",
@@ -100,6 +119,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--tensor-parallel", type=int, default=1,
                    help="GPUs to shard across.")
     s.add_argument("--max-model-len", type=int, default=4096)
+    s.add_argument("--draft-model", default=None,
+                   help="Small model for speculative decoding (MLX). Faster "
+                        "generation, identical output. e.g. a 0.5B-1B.")
     s.add_argument("--kernel-profile", default="default",
                    choices=["default", "low-latency"])
     s.add_argument("--backend", default=None,
@@ -138,7 +160,7 @@ def cmd_run(a: argparse.Namespace) -> int:
 
     device, engine = fast.pick_device(), fast.pick_engine()
     cfg = fast.OptConfig() if not a.no_fast else fast.OptConfig(
-        packing=False, bf16=False, compile=False, grad_checkpoint=False,
+        data_strategy="pad", bf16=False, grad_checkpoint=False,
         lora=False, prefetch=False, flash_attn=False)
     log(f"Hardware: device={device}  engine={engine}")
     log(f"Fast-path: {cfg.summary()}")
@@ -150,6 +172,7 @@ def cmd_run(a: argparse.Namespace) -> int:
     ckpt = train.run(
         model=a.model, dataset=a.data, epochs=a.epochs,
         strategy="single", quant=a.quant, out=a.out, opt=cfg,
+        max_len=a.ctx, max_examples=a.max_examples,
     )
     log(f"✓ Fine-tune complete: {ckpt}")
 
@@ -178,6 +201,29 @@ def cmd_bench(a: argparse.Namespace) -> int:
         log("=" * 60)
         log(f"Full stack is {stack[0]['speedup']:.2f}x faster than the "
             f"fp32/naive-padded baseline on this hardware (useful tokens/sec).")
+    return 0
+
+
+def cmd_bench_serve(a: argparse.Namespace) -> int:
+    from orchestrator import backends_mlx
+    banner("BENCH-SERVE  (generation tok/s across model sizes)")
+    if not backends_mlx.is_available():
+        log("bench-serve needs MLX (Apple Silicon). Skipping.")
+        return 1
+    results = backends_mlx.benchmark_serving(
+        a.models, max_tokens=a.max_tokens, delete_after=not a.keep_downloads)
+    print()
+    log("=" * 68)
+    log(f"{'model':44s} {'tok/s':>8s} {'peak GB':>9s}")
+    log("-" * 68)
+    for r in results:
+        if "error" in r:
+            log(f"{r['model']:44s}   ERROR: {r['error']}")
+        else:
+            log(f"{r['model']:44s} {r['tok_s']:8.1f} {r['peak_gb']:9.1f}")
+    log("=" * 68)
+    log("Note: bigger model = better answers but fewer tok/s (memory-bandwidth "
+        "bound). Pick the size that fits your latency budget.")
     return 0
 
 
@@ -219,6 +265,7 @@ def cmd_serve(a: argparse.Namespace) -> int:
         model=a.model, quant=a.quant, port=a.port, host=a.host,
         tensor_parallel=a.tensor_parallel, max_model_len=a.max_model_len,
         continuous_batching=a.continuous_batching, backend_override=a.backend,
+        draft_model=a.draft_model,
     )
 
 
@@ -249,6 +296,7 @@ def main(argv=None) -> int:
     handler = {
         "run": cmd_run,
         "bench": cmd_bench,
+        "bench-serve": cmd_bench_serve,
         "train": cmd_train,
         "serve": cmd_serve,
         "cost": cmd_cost,

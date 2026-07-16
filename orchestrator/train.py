@@ -32,20 +32,27 @@ from .util import gpu_count, have, log, resolve_model
 def run(model: str, dataset: str, epochs: int, strategy: str, quant: str,
         out: str, num_workers: int = 0, lr: float = 2e-5, batch_size: int = 4,
         grad_accum: int = 4, max_len: int = 1024, use_lora: bool | None = None,
-        resume: bool = True, opt=None) -> str:
+        resume: bool = True, opt=None, max_examples: int | None = None) -> str:
+    m = resolve_model(model)
+    from . import backends_mlx, fast
+    if opt is None:
+        opt = fast.OptConfig()
+
+    # Apple-Silicon-native path first: MLX doesn't need torch/transformers and is
+    # the fastest, most memory-safe trainer on a Mac.
+    ckpt_dir_mlx = os.path.join(out, m["alias"])
+    if fast.pick_engine() == "mlx" and backends_mlx.is_available() and _mlx_ok(m["hf"]):
+        os.makedirs(ckpt_dir_mlx, exist_ok=True)
+        return _train_mlx(m, dataset, epochs, ckpt_dir_mlx, opt, max_len,
+                          max_examples)
+
     if not (have("torch") and have("transformers")):
         raise RuntimeError(
-            "Training requires torch + transformers. Install with:\n"
+            "Training requires torch + transformers (or MLX on Apple Silicon).\n"
             "  pip install torch transformers datasets peft accelerate")
-
-    m = resolve_model(model)
     ckpt_dir = os.path.join(out, m["alias"])
     os.makedirs(ckpt_dir, exist_ok=True)
     workers = num_workers or max(1, gpu_count())
-    # Fast-path config (packing/bf16/compile/...). Defaults to all-on.
-    from . import fast
-    if opt is None:
-        opt = fast.OptConfig()
     # QLoRA is the default when quantizing; else follow the fast-path LoRA flag.
     if use_lora is None:
         use_lora = quant in ("4bit", "8bit") or opt.lora
@@ -53,17 +60,11 @@ def run(model: str, dataset: str, epochs: int, strategy: str, quant: str,
     cfg = dict(hf=m["hf"], dataset=dataset, epochs=epochs, quant=quant,
                lr=lr, batch_size=batch_size, grad_accum=grad_accum,
                max_len=max_len, use_lora=use_lora, out=ckpt_dir,
-               params_b=m["params_b"], resume=resume, opt=opt)
+               params_b=m["params_b"], resume=resume, opt=opt,
+               max_examples=max_examples)
 
     log(f"Strategy={strategy} workers={workers} quant={quant} "
         f"lora={use_lora} gpus={gpu_count()}")
-
-    # Apple-Silicon-native path: MLX is the fastest, most memory-safe trainer on
-    # a Mac (4-bit + LoRA keeps an 8B at ~5 GB). Used automatically when engine
-    # resolves to 'mlx' and the model is MLX-loadable.
-    from . import backends_mlx, fast
-    if fast.pick_engine() == "mlx" and backends_mlx.is_available() and _mlx_ok(m["hf"]):
-        return _train_mlx(m, dataset, epochs, ckpt_dir, opt)
 
     if strategy in ("fsdp-ray", "deepspeed-ray") and have("ray") and gpu_count() > 1:
         _train_ray(cfg, strategy, workers, ckpt_dir)
@@ -89,10 +90,10 @@ def _mlx_ok(model_id: str) -> bool:
     return resolve_model(model_id)["params_b"] <= 4
 
 
-def _train_mlx(m, dataset, epochs, ckpt_dir, opt):
+def _train_mlx(m, dataset, epochs, ckpt_dir, opt, max_len=1024, max_examples=None):
     """Apple-Silicon LoRA fine-tune via mlx-lm (see backends_mlx.train_mlx)."""
     from . import backends_mlx, data, monitor
-    records = data.load_records(dataset)
+    records = data.load_records(dataset, max_examples=max_examples)
     log(f"[mlx] dataset: {len(records)} examples")
 
     def progress(step=None, loss=None, throughput_tok_s=None):
@@ -101,8 +102,7 @@ def _train_mlx(m, dataset, epochs, ckpt_dir, opt):
 
     backends_mlx.train_mlx(
         m["hf"], records, ckpt_dir, epochs=epochs,
-        batch_size=1, max_seq_len=opt.__dict__.get("max_seq_len", 1024),
-        progress=progress)
+        batch_size=1, max_seq_len=max_len, progress=progress)
     return ckpt_dir
 
 
@@ -163,7 +163,7 @@ def _train_single(cfg: dict, ckpt_dir: str):
     # Apply compile / grad-checkpoint / flash to the model.
     model = fast.optimize_model(model, o, device)
 
-    records = data.load_records(cfg["dataset"])
+    records = data.load_records(cfg["dataset"], max_examples=cfg.get("max_examples"))
     n_tokens = data.count_tokens(records, tok)
 
     # Adaptive data strategy: analyze the length distribution and pick pack /

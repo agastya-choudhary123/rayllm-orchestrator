@@ -29,25 +29,91 @@ def _read_jsonl(path: str) -> list[dict]:
     return rows
 
 
-def load_records(dataset: str, split: str = "train") -> list[dict]:
-    """Return a list of {'prompt','completion'} or {'text'} records."""
+def load_records(dataset: str, split: str = "train",
+                 max_examples: int | None = None) -> list[dict]:
+    """Return a list of {'prompt','completion'} or {'text'} records.
+
+    Accepts a local .jsonl path or a HuggingFace dataset id. Understands the
+    common instruction-tuning schemas: prompt/completion, instruction/output,
+    instruction/response (+optional context, e.g. Databricks Dolly), plain text.
+    `max_examples` caps how many rows are loaded (keeps training time/memory
+    bounded on a laptop).
+    """
     if os.path.isfile(dataset):
-        return _read_jsonl(dataset)
-    # Otherwise treat as a HuggingFace dataset id.
-    from datasets import load_dataset
-    ds = load_dataset(dataset, split=split)
-    cols = ds.column_names
-    out = []
-    for r in ds:
-        if "prompt" in cols and "completion" in cols:
-            out.append({"prompt": r["prompt"], "completion": r["completion"]})
-        elif "text" in cols:
-            out.append({"text": r["text"]})
-        elif "instruction" in cols and "output" in cols:
-            out.append({"prompt": r["instruction"], "completion": r["output"]})
-        else:  # fall back to the first text-ish column
-            out.append({"text": str(r[cols[0]])})
-    return out
+        rows = _read_jsonl(dataset)
+        recs = [_normalize_record(r) for r in rows]
+    else:
+        from datasets import load_dataset
+        ds = load_dataset(dataset, split=split)
+        recs = [_normalize_record(dict(r)) for r in ds]
+    recs = [r for r in recs if r]  # drop unusable rows
+    if max_examples:
+        recs = recs[:max_examples]
+    return recs
+
+
+def _normalize_record(r: dict) -> dict | None:
+    """Map a raw row from any common schema into {prompt,completion} or {text}."""
+    def g(*keys):
+        for k in keys:
+            if k in r and r[k] not in (None, ""):
+                return str(r[k])
+        return None
+
+    prompt = g("prompt", "instruction", "question", "input")
+    completion = g("completion", "response", "output", "answer")
+    context = g("context", "input") if prompt else None
+    # Avoid using the same field as both prompt and context.
+    if context and context == prompt:
+        context = None
+
+    if prompt and completion:
+        if context:
+            prompt = f"{prompt}\n\nContext:\n{context}"
+        return {"prompt": prompt, "completion": completion}
+    text = g("text", "content")
+    if text:
+        return {"text": text}
+    return None
+
+
+def filter_for_training(records: list[dict], tokenizer, max_len: int,
+                        min_completion_tokens: int = 4) -> tuple[list[dict], dict]:
+    """Drop examples that would train badly, and report what/why.
+
+    The critical case: if an example's *prompt* alone is >= max_len, truncation
+    leaves zero completion tokens -> the loss is computed over an empty set ->
+    NaN, which poisons the whole run. We also drop examples so long that fewer
+    than `min_completion_tokens` of the response would survive truncation. This
+    is what makes training on real, variable-length datasets robust.
+    """
+    def n_tokens(text: str) -> int:
+        # Works for both HF tokenizers and MLX's TokenizerWrapper.
+        if hasattr(tokenizer, "encode"):
+            return len(tokenizer.encode(text))
+        return len(tokenizer(text)["input_ids"])
+
+    kept, dropped_masked, dropped_long = [], 0, 0
+    for r in records:
+        if "text" in r:
+            if n_tokens(r["text"]) < 2:
+                dropped_long += 1
+                continue
+            kept.append(r)
+            continue
+        prompt = PROMPT_TEMPLATE.format(prompt=r["prompt"])
+        p = n_tokens(prompt)
+        c = n_tokens(r["completion"])
+        if p >= max_len - min_completion_tokens:
+            dropped_masked += 1        # prompt eats the whole window -> NaN risk
+            continue
+        if p + c > max_len:
+            dropped_long += 1          # completion would be partly truncated
+            continue
+        kept.append(r)
+    stats = {"kept": len(kept), "dropped_prompt_too_long": dropped_masked,
+             "dropped_over_length": dropped_long, "total": len(records)}
+    return kept, stats
 
 
 def count_tokens(records: list[dict], tokenizer) -> int:
