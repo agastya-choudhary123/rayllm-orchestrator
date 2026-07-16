@@ -25,8 +25,8 @@ git init
 git add .
 git commit -m "Initial commit: clean LLM training and serving tool"
 
-# Add GitHub remote (replace yourorg with your GitHub org)
-git remote add origin https://github.com/yourorg/rayllm-orchestrator.git
+# Add GitHub remote (replace agastya-choudhary123 with your GitHub org)
+git remote add origin https://github.com/agastya-choudhary123/rayllm-orchestrator.git
 git branch -M main
 git push -u origin main
 ```
@@ -92,7 +92,7 @@ git tag v0.1.0
 git push origin v0.1.0
 
 # Go to GitHub:
-# https://github.com/yourorg/rayllm-orchestrator/releases/new
+# https://github.com/agastya-choudhary123/rayllm-orchestrator/releases/new
 # Tag: v0.1.0
 # Release title: v0.1.0
 # Description:
@@ -133,11 +133,11 @@ docker run -it rayllm:test train --help
 docker login ghcr.io
 # (use your GitHub username + personal access token with write:packages)
 
-docker tag rayllm:test ghcr.io/yourorg/rayllm:0.1.0
-docker push ghcr.io/yourorg/rayllm:0.1.0
+docker tag rayllm:test ghcr.io/agastya-choudhary123/rayllm:0.1.0
+docker push ghcr.io/agastya-choudhary123/rayllm:0.1.0
 
 # Users can now run:
-# docker run -it ghcr.io/yourorg/rayllm:0.1.0 train --help
+# docker run -it ghcr.io/agastya-choudhary123/rayllm:0.1.0 train --help
 ```
 
 ---

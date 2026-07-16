@@ -32,7 +32,7 @@ Thanks for your interest in contributing! Here's how to help.
 
 ```bash
 # Clone
-git clone https://github.com/yourorg/rayllm-orchestrator
+git clone https://github.com/agastya-choudhary123/rayllm-orchestrator
 cd rayllm-orchestrator
 
 # Create virtual environment

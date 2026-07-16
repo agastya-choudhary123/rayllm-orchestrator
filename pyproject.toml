@@ -9,7 +9,7 @@ description = "Train and serve LLMs on any hardware with one command each"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
-    {name = "Your Name", email = "you@example.com"},
+    {name = "Agastya Choudhary", email = "agastya.r.choudhary@gmail.com"},
 ]
 requires-python = ">=3.9"
 dependencies = [
@@ -30,8 +30,12 @@ gpu = [
 mlx = ["mlx>=0.18"]
 
 [project.scripts]
-rayllm = "orchestrator:main"
+rayllm = "orchestrator.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/yourorg/rayllm-orchestrator"
-Repository = "https://github.com/yourorg/rayllm-orchestrator"
+Homepage = "https://github.com/agastya-choudhary123/rayllm-orchestrator"
+Repository = "https://github.com/agastya-choudhary123/rayllm-orchestrator"
+
+[tool.setuptools]
+packages = ["orchestrator"]
+py-modules = []

@@ -45,7 +45,7 @@ rayllm serve --model ./checkpoints/gpt2
 
 ### Option 2: From source
 ```bash
-git clone https://github.com/yourorg/rayllm-orchestrator
+git clone https://github.com/agastya-choudhary123/rayllm-orchestrator
 cd rayllm-orchestrator
 pip install -e .
 python orchestrator.py train --model gpt2 --dataset my-data.jsonl
@@ -53,8 +53,8 @@ python orchestrator.py train --model gpt2 --dataset my-data.jsonl
 
 ### Option 3: Docker
 ```bash
-docker pull ghcr.io/yourorg/rayllm:latest
-docker run -it ghcr.io/yourorg/rayllm:latest train \
+docker pull ghcr.io/agastya-choudhary123/rayllm:latest
+docker run -it ghcr.io/agastya-choudhary123/rayllm:latest train \
   --model gpt2 --dataset my-data.jsonl --epochs 3
 ```
 

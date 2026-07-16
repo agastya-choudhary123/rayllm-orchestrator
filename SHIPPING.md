@@ -25,7 +25,7 @@ git commit -m "Initial commit: clean LLM training and serving tool"
 # Make it public
 
 # Push to GitHub
-git remote add origin https://github.com/yourorg/rayllm-orchestrator.git
+git remote add origin https://github.com/agastya-choudhary123/rayllm-orchestrator.git
 git branch -M main
 git push -u origin main
 ```
@@ -70,8 +70,8 @@ mlx = ["mlx>=0.18"]
 rayllm = "orchestrator:main"
 
 [project.urls]
-Homepage = "https://github.com/yourorg/rayllm-orchestrator"
-Repository = "https://github.com/yourorg/rayllm-orchestrator"
+Homepage = "https://github.com/agastya-choudhary123/rayllm-orchestrator"
+Repository = "https://github.com/agastya-choudhary123/rayllm-orchestrator"
 ```
 
 ### 3. Reorganize Code (Optional)
@@ -209,7 +209,7 @@ git tag v0.1.0
 git push origin v0.1.0
 
 # Create release on GitHub
-# Visit: https://github.com/yourorg/rayllm-orchestrator/releases/new
+# Visit: https://github.com/agastya-choudhary123/rayllm-orchestrator/releases/new
 # Tag: v0.1.0
 # Title: v0.1.0
 # Description:
@@ -260,17 +260,17 @@ docker run -it rayllm:test serve --help
 
 ```bash
 # Option A: Docker Hub
-docker tag rayllm:test yourorg/rayllm:0.1.0
-docker push yourorg/rayllm:0.1.0
+docker tag rayllm:test agastya-choudhary123/rayllm:0.1.0
+docker push agastya-choudhary123/rayllm:0.1.0
 
 # Option B: GitHub Container Registry (ghcr.io)
-docker tag rayllm:test ghcr.io/yourorg/rayllm:0.1.0
-docker push ghcr.io/yourorg/rayllm:0.1.0
+docker tag rayllm:test ghcr.io/agastya-choudhary123/rayllm:0.1.0
+docker push ghcr.io/agastya-choudhary123/rayllm:0.1.0
 ```
 
 Users can now run:
 ```bash
-docker run -it ghcr.io/yourorg/rayllm:0.1.0 train \
+docker run -it ghcr.io/agastya-choudhary123/rayllm:0.1.0 train \
   --model gpt2 --dataset my-data.jsonl
 ```
 
@@ -347,7 +347,7 @@ jobs:
 ### 3. Set Up PyPI Token
 
 ```bash
-# Go to: https://github.com/yourorg/rayllm-orchestrator/settings/secrets/actions
+# Go to: https://github.com/agastya-choudhary123/rayllm-orchestrator/settings/secrets/actions
 # New Repository Secret:
 # Name: PYPI_TOKEN
 # Value: (paste your token from https://pypi.org/account/api-tokens/)
@@ -399,7 +399,7 @@ pip install rayllm-orchestrator
 rayllm train --help
 
 # Test Docker
-docker run -it ghcr.io/yourorg/rayllm:0.1.0 serve --help
+docker run -it ghcr.io/agastya-choudhary123/rayllm:0.1.0 serve --help
 ```
 
 ---
@@ -425,12 +425,12 @@ python -m build
 ```bash
 # Check login
 docker login ghcr.io
-# Username: yourorg
+# Username: agastya-choudhary123
 # Password: (GitHub personal access token with write:packages)
 ```
 
 ### GitHub Actions workflow fails
-- Check logs: https://github.com/yourorg/rayllm/actions
+- Check logs: https://github.com/agastya-choudhary123/rayllm/actions
 - Common issue: `PYPI_TOKEN` secret not set
 - Check: Settings → Secrets → Actions → PYPI_TOKEN exists
 
