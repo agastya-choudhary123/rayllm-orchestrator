@@ -2,7 +2,7 @@
 
 This project fine-tunes on **real, reputable, permissively-licensed** instruction
 datasets. Nothing synthetic-from-a-black-box, nothing with unclear rights,
-nothing with PII. You point `--data` at a local `.jsonl` or a HuggingFace
+nothing with PII. You point `--dataset` at a local `.jsonl` or a HuggingFace
 dataset id and the loader normalizes the common schemas automatically.
 
 ## Recommended datasets (all safe to use and cite)
