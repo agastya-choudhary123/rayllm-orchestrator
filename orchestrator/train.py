@@ -39,12 +39,25 @@ def run(model: str, dataset: str, epochs: int, strategy: str, quant: str,
         opt = fast.OptConfig()
 
     # Apple-Silicon-native path first: MLX doesn't need torch/transformers and is
-    # the fastest, most memory-safe trainer on a Mac.
+    # the fastest, most memory-safe trainer on a Mac. If MLX can't load this
+    # model (e.g. the repo ships only PyTorch .bin weights, no safetensors), fall
+    # back to the torch path instead of crashing the user's run.
     ckpt_dir_mlx = os.path.join(out, m["alias"])
     if fast.pick_engine() == "mlx" and backends_mlx.is_available() and _mlx_ok(m["hf"]):
         os.makedirs(ckpt_dir_mlx, exist_ok=True)
-        return _train_mlx(m, dataset, epochs, ckpt_dir_mlx, opt, max_len,
-                          max_examples)
+        try:
+            return _train_mlx(m, dataset, epochs, ckpt_dir_mlx, opt, max_len,
+                              max_examples)
+        except Exception as e:
+            if not (have("torch") and have("transformers")):
+                raise RuntimeError(
+                    f"MLX training failed for {m['hf']} ({e}) and torch is not "
+                    "installed to fall back to.\n"
+                    "  Install torch to serve models MLX can't load:\n"
+                    "  pip install torch transformers datasets peft accelerate"
+                ) from e
+            log(f"[mlx] can't train {m['hf']} ({type(e).__name__}: {e}); "
+                "falling back to the PyTorch path.")
 
     if not (have("torch") and have("transformers")):
         raise RuntimeError(
