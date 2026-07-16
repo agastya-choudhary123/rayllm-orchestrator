@@ -20,7 +20,7 @@ import threading
 import time
 import uuid
 
-from . import models, monitor
+from . import models
 from .util import gpu_count, have, log
 
 
@@ -83,8 +83,6 @@ def run(model: str, quant: str, port: int, host: str, tensor_parallel: int,
     elif backend == "transformers":
         return _serve_transformers(model, quant, port, host, max_model_len,
                                    continuous_batching)
-    elif backend == "webgpu":
-        return _serve_webgpu(model)
     raise RuntimeError(f"Unknown backend: {backend}")
 
 
@@ -137,9 +135,6 @@ def _serve_ollama(model: str, port: int, host: str) -> int:
                                        options={"temperature": temp,
                                                "num_predict": max_tokens})
                 text = resp.get("response", "").strip()
-                dt = time.time() - t0
-                toks = len(text.split())
-                monitor.set_progress(throughput_tok_s=toks / dt if dt else 0, step=1)
                 return self._json_resp(200, {
                     "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
                     "object": "chat.completion", "created": int(time.time()),
@@ -343,8 +338,6 @@ def _serve_llama_cpp(model_path: str, port: int, host: str) -> int:
                        echo=False, top_p=0.95)
             text = out["choices"][0]["text"].strip()
             dt = time.time() - t0
-            toks = len(text.split())
-            monitor.set_progress(throughput_tok_s=toks / dt if dt else 0, step=1)
 
             if self.path == "/v1/chat/completions":
                 return self._json_resp(200, {
@@ -460,8 +453,6 @@ class _BatchEngine:
         new_tokens = int((gen != self.tok.pad_token_id).sum().item())
         dt = time.time() - t0
         self._served += len(batch)
-        monitor.set_progress(throughput_tok_s=new_tokens / dt if dt else 0,
-                             step=self._served)
         for b, text in zip(batch, texts):
             b["out"] = text.strip()
             b["event"].set()
@@ -536,20 +527,3 @@ def _serve_transformers(model, quant, port, host, max_model_len, batching) -> in
     except KeyboardInterrupt:
         srv.shutdown()
     return 0
-
-
-# --------------------------------------------------------------------------- #
-# WebGPU backend (browser-based inference)
-# --------------------------------------------------------------------------- #
-def _serve_webgpu(model_path: str) -> int:
-    """Export model and launch WebGPU frontend.
-
-    This runs inference *in the browser* using WebGPU, not on the server.
-    No network latency, GPU acceleration on user's device.
-    """
-    try:
-        from . import backends_webgpu
-        return backends_webgpu.serve_webgpu(model_path)
-    except ImportError:
-        log("WebGPU backend not available. Install with: pip install optimum")
-        return 1

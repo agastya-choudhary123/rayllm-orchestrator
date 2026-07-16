@@ -25,7 +25,7 @@ import math
 import os
 import time
 
-from . import cost, data, models, monitor
+from . import data, models
 from .util import gpu_count, have, log, resolve_model
 
 
@@ -92,17 +92,13 @@ def _mlx_ok(model_id: str) -> bool:
 
 def _train_mlx(m, dataset, epochs, ckpt_dir, opt, max_len=1024, max_examples=None):
     """Apple-Silicon LoRA fine-tune via mlx-lm (see backends_mlx.train_mlx)."""
-    from . import backends_mlx, data, monitor
+    from . import backends_mlx, data
     records = data.load_records(dataset, max_examples=max_examples)
     log(f"[mlx] dataset: {len(records)} examples")
 
-    def progress(step=None, loss=None, throughput_tok_s=None):
-        monitor.set_progress(step=step, loss=loss,
-                             throughput_tok_s=throughput_tok_s)
-
     backends_mlx.train_mlx(
         m["hf"], records, ckpt_dir, epochs=epochs,
-        batch_size=1, max_seq_len=max_len, progress=progress)
+        batch_size=1, max_seq_len=max_len)
     return ckpt_dir
 
 
@@ -180,9 +176,6 @@ def _train_single(cfg: dict, ckpt_dir: str):
     sched = torch.optim.lr_scheduler.OneCycleLR(
         opt, max_lr=cfg["lr"], total_steps=max(total_steps, 1))
 
-    est = cost.estimate_training(cfg["hf"], cfg["dataset"], cfg["epochs"],
-                                 quant=cfg["quant"])
-    burn = est.dollars / max(est.gpu_hours, 1e-6)
 
     start_epoch = _maybe_resume(model, opt, ckpt_dir) if cfg["resume"] else 0
     model.train()
@@ -208,8 +201,6 @@ def _train_single(cfg: dict, ckpt_dir: str):
                 gstep += 1
                 dt = time.time() - t0
                 tput = seen_tokens / dt if dt > 0 else 0
-                monitor.set_progress(throughput_tok_s=tput, burn_usd_hr=burn,
-                                     step=gstep, loss=running / (i + 1))
                 if gstep % 5 == 0:
                     log(f"  epoch {epoch} step {gstep}/{total_steps} "
                         f"loss={running/(i+1):.4f} lr={sched.get_last_lr()[0]:.2e} "
