@@ -9,8 +9,7 @@
 All three run genuine training: tokenized DataLoader, forward/backward, AdamW,
 gradient accumulation, real loss, periodic checkpoints (fault tolerance +
 resume), and a final HuggingFace checkpoint that the serving layer loads
-directly. Live throughput and cost burn-rate are pushed to the Prometheus
-exporter as training progresses.
+directly. Throughput is logged as training progresses.
 
 Quantization: with --quant 4bit/8bit we load the base weights quantized
 (bitsandbytes) and train LoRA adapters (QLoRA). At the end the adapters are

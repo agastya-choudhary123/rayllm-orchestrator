@@ -4,19 +4,17 @@ transformers>=4.44
 datasets>=2.20
 peft>=0.12            # LoRA / QLoRA adapters
 accelerate>=0.33
-
-# Observability
-prometheus_client>=0.20
-streamlit>=1.36
-psutil>=5.9
+psutil>=5.9           # MLX memory guard on Apple Silicon
 
 # Serving backends (optional, auto-detected)
 llama-cpp-python>=0.2  # GGUF support, CPU-efficient quantized inference
 ollama>=0.1           # Local model management + serving (any quant)
 
+# Apple Silicon native training + serving (auto-detected on macOS/arm64)
+mlx>=0.18             ; sys_platform == "darwin"
+mlx-lm>=0.18          ; sys_platform == "darwin"
+
 # GPU-node extras (installed on Linux/CUDA hosts for the fast paths).
 ray[default]>=2.35    ; sys_platform == "linux"
 vllm>=0.6.0           ; sys_platform == "linux"
 bitsandbytes>=0.43    ; sys_platform == "linux"
-nvidia-ml-py>=12.560  # pynvml GPU telemetry
-scikit-learn>=1.5

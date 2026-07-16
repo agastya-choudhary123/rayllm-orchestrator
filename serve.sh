@@ -11,5 +11,4 @@ python orchestrator.py serve \
   --port "${PORT:-8000}" \
   --tensor-parallel "${TP:-1}" \
   --continuous-batching \
-  --kernel-profile "${KERNEL_PROFILE:-default}" \
   "$@"

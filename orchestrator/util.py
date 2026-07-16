@@ -54,8 +54,6 @@ def capabilities() -> dict:
         "ray": have("ray"),
         "vllm": have("vllm"),
         "transformers": have("transformers"),
-        "prometheus": have("prometheus_client"),
-        "streamlit": have("streamlit"),
         "gpus": gpu_count(),
         "numactl": have_cmd("numactl"),
         "taskset": have_cmd("taskset"),

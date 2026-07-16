@@ -1,32 +1,22 @@
-# One-click local stack: serving endpoint + observability dashboard.
-#   docker compose up            (CPU host -> stub/sim mode, fully demoable)
+# One-click local serving.
+#   docker compose up                 (CPU host)
 #   docker compose --profile gpu up   (GPU host -> real vLLM)
 services:
   serve:
     build: .
     command: ["serve", "--model", "./checkpoints/phi-3", "--quant", "4bit",
               "--continuous-batching", "--port", "8000", "--host", "0.0.0.0"]
-    ports: ["8000:8000", "9090:9090"]
+    ports: ["8000:8000"]
     volumes: ["./checkpoints:/app/checkpoints"]
-
-  dashboard:
-    build: .
-    command: ["monitor", "--port", "8501"]
-    ports: ["8501:8501"]
-    depends_on: [serve]
-    # Share the serve container's metrics endpoint.
-    environment:
-      - METRICS_HOST=serve
 
   # GPU serving variant -- enable with `--profile gpu`.
   serve-gpu:
     profiles: ["gpu"]
     build:
       context: .
-      args: {FULL: "1"}
     command: ["serve", "--model", "./checkpoints/phi-3", "--quant", "4bit",
               "--tensor-parallel", "2", "--port", "8000", "--host", "0.0.0.0"]
-    ports: ["8000:8000", "9090:9090"]
+    ports: ["8000:8000"]
     volumes: ["./checkpoints:/app/checkpoints"]
     deploy:
       resources:

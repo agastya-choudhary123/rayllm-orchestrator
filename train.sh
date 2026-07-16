@@ -7,9 +7,8 @@ cd "$(dirname "$0")"
 
 python orchestrator.py train \
   --model "${MODEL:-phi-3}" \
-  --dataset "${DATASET:-my-data}" \
+  --dataset "${DATASET:-examples/my-data.jsonl}" \
   --epochs "${EPOCHS:-3}" \
   --strategy "${STRATEGY:-fsdp-ray}" \
   --quant "${QUANT:-4bit}" \
-  --kernel-profile "${KERNEL_PROFILE:-default}" \
   "$@"

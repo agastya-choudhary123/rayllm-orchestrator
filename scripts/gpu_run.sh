@@ -11,10 +11,7 @@ MODEL="${MODEL:-microsoft/Phi-3-mini-4k-instruct}"
 DATASET="${DATASET:-examples/my-data.jsonl}"
 
 echo ">> Building CUDA image (full stack: torch, ray, vllm, bitsandbytes)..."
-docker build -f Dockerfile --build-arg FULL=1 -t rayllm:gpu .
-
-echo ">> Cost estimate first..."
-docker run --rm --gpus all rayllm:gpu cost --model "$MODEL" --epochs 3 --quant 4bit --spot
+docker build -f Dockerfile -t rayllm:gpu .
 
 echo ">> QLoRA + FSDP training across all visible GPUs..."
 docker run --rm --gpus all \
@@ -23,7 +20,7 @@ docker run --rm --gpus all \
     --epochs 3 --strategy fsdp-ray --quant 4bit
 
 echo ">> Serving the merged checkpoint with vLLM (continuous batching)..."
-docker run -d --name rayllm-vllm --gpus all -p 8000:8000 -p 9090:9090 \
+docker run -d --name rayllm-vllm --gpus all -p 8000:8000 \
   -v rayllm-models:/models -v "$PWD/checkpoints:/app/checkpoints" \
   rayllm:gpu serve --model ./checkpoints/Phi-3-mini-4k-instruct \
     --quant 4bit --tensor-parallel "$(nvidia-smi -L | wc -l)" \
@@ -38,5 +35,4 @@ curl -s -X POST http://localhost:8000/v1/chat/completions \
   -d '{"messages":[{"role":"user","content":"What is FSDP?"}],"max_tokens":64}'
 echo
 echo ">> Endpoint:  http://localhost:8000/v1/chat/completions"
-echo ">> Metrics:   http://localhost:9090/metrics"
 echo ">> Stop with: docker rm -f rayllm-vllm"

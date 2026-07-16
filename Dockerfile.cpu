@@ -15,11 +15,10 @@ WORKDIR /app
 # CPU torch wheel + the real ML stack (no CUDA-only deps here).
 RUN pip install --upgrade pip && \
     pip install torch --index-url https://download.pytorch.org/whl/cpu && \
-    pip install transformers datasets peft accelerate \
-                prometheus_client psutil "ray[default]" streamlit
+    pip install transformers datasets peft accelerate psutil "ray[default]"
 
 COPY . .
 
-EXPOSE 8000 8501 9090
+EXPOSE 8000
 ENTRYPOINT ["python", "orchestrator.py"]
 CMD ["--help"]
