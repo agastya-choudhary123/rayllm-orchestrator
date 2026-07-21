@@ -244,7 +244,8 @@ def _train_ray(cfg: dict, strategy: str, workers: int, ckpt_dir: str):
         if strategy == "fsdp-ray" and not config["use_lora"]:
             model = FSDP(model, mixed_precision=MixedPrecision(
                 param_dtype=torch.bfloat16, reduce_dtype=torch.bfloat16))
-        records = data.load_records(config["dataset"])
+        records = data.load_records(config["dataset"],
+                                    max_examples=config.get("max_examples"))
         loader = data.build_dataloader(records, tok,
                                        batch_size=config["batch_size"],
                                        max_len=config["max_len"])

@@ -119,8 +119,14 @@ def train_mlx(model_id: str, records: list, out_dir: str, epochs: int = 3,
     # Real train/val split -- shuffle deterministically, hold out val_fraction.
     recs = list(records)
     random.Random(seed).shuffle(recs)
-    n_val = max(1, int(len(recs) * val_fraction)) if len(recs) > 10 else max(1, len(recs) // 5)
-    val_recs, train_recs = recs[:n_val], recs[n_val:]
+    if len(recs) < 2:
+        # Too few to split -- train on what we have and reuse it for val so the
+        # run never crashes on an empty training set.
+        val_recs, train_recs = recs, recs
+    else:
+        n_val = max(1, int(len(recs) * val_fraction)) if len(recs) > 10 else max(1, len(recs) // 5)
+        n_val = min(n_val, len(recs) - 1)   # always leave >=1 training example
+        val_recs, train_recs = recs[:n_val], recs[n_val:]
     train_ds, val_ds = _build_dataset(train_recs, tok), _build_dataset(val_recs, tok)
 
     iters = max(1, epochs * math.ceil(len(train_recs) / batch_size))

@@ -160,6 +160,95 @@ def select_serving_backend(model_id: str):
 
 
 # --------------------------------------------------------------------------- #
+# Backend discovery -- scan the system so the USER can choose (not just auto)
+# --------------------------------------------------------------------------- #
+def _torch_devices() -> list[str]:
+    """Compute devices torch can actually reach on this machine."""
+    if not have("torch"):
+        return []
+    devices = []
+    try:
+        import torch
+        if torch.cuda.is_available():
+            devices += [f"cuda:{i}" for i in range(torch.cuda.device_count())]
+        if torch.backends.mps.is_available():
+            devices.append("mps")
+    except Exception:
+        pass
+    devices.append("cpu")
+    return devices
+
+
+def scan_backends(model_id: str | None = None) -> list[dict]:
+    """Probe the system and report every serving backend + whether it's usable.
+
+    Returns an ordered list (fastest → most compatible) of descriptors:
+        {name, available, device, note}
+    `available` means installed AND runnable here; `note` explains why not, or
+    what it buys you. If `model_id` is given, the format-aware `recommended`
+    flag marks the one `select_serving_backend` would auto-pick.
+    """
+    spec = ModelSpec(model_id) if model_id else None
+    devices = _torch_devices()
+    accel = next((d for d in devices if d != "cpu"), "cpu")
+
+    def _mlx_ok() -> bool:
+        try:
+            from . import backends_mlx
+            return backends_mlx.is_available()
+        except Exception:
+            return False
+
+    def _ollama_ok() -> bool:
+        if not have("ollama"):
+            return False
+        try:
+            import ollama
+            ollama.list()
+            return True
+        except Exception:
+            return False
+
+    def _cuda() -> bool:
+        return any(d.startswith("cuda") for d in devices)
+
+    rows = [
+        {"name": "ollama", "available": _ollama_ok(),
+         "device": "metal/gpu",
+         "note": "local model manager; needs the ollama daemon running"
+                 if not _ollama_ok() else "daemon reachable"},
+        {"name": "mlx", "available": _mlx_ok(),
+         "device": "apple-silicon",
+         "note": "Apple-Silicon-native, fastest M-series inference"
+                 if _mlx_ok() else "requires Apple Silicon + `pip install mlx-lm`"},
+        {"name": "llama_cpp", "available": have("llama_cpp"),
+         "device": "cpu/metal",
+         "note": "GGUF models; Metal on macOS"
+                 if have("llama_cpp") else "`pip install llama-cpp-python`"},
+        {"name": "vllm", "available": have("vllm") and _cuda(),
+         "device": accel,
+         "note": "continuous batching, best on CUDA"
+                 if have("vllm") and _cuda()
+                 else ("installed but no CUDA GPU found" if have("vllm")
+                       else "`pip install vllm` (needs a CUDA GPU)")},
+        {"name": "transformers", "available": have("torch") and have("transformers"),
+         "device": accel,
+         "note": f"universal fallback on {accel}"
+                 if have("torch") and have("transformers")
+                 else "`pip install torch transformers`"},
+    ]
+
+    if spec is not None:
+        try:
+            auto, _ = select_serving_backend(model_id)
+        except Exception:
+            auto = None
+        for r in rows:
+            r["recommended"] = (r["name"] == auto)
+    return rows
+
+
+# --------------------------------------------------------------------------- #
 # Backend loaders
 # --------------------------------------------------------------------------- #
 def load_for_serving_transformers(model_id: str, device: str):
@@ -194,16 +283,17 @@ class _LlamaCppWrapper:
         self.model = llama_model
 
     def generate(self, input_ids, max_new_tokens, do_sample, temperature, pad_token_id):
-        # input_ids is a tensor; decode the first sequence.
-        from transformers import AutoTokenizer
+        # Use the GGUF model's OWN tokenizer (llama.cpp), never a foreign one --
+        # a mismatched vocab silently corrupts every prompt and completion.
         import torch
-        tok = AutoTokenizer.from_pretrained("gpt2")  # dummy tokenizer
-        prompt = tok.decode(input_ids[0])
+        ids = input_ids[0].tolist()
+        prompt = self.model.detokenize(ids).decode("utf-8", errors="ignore")
         out = self.model(prompt, max_tokens=max_new_tokens, temperature=temperature,
                          echo=False, top_p=0.95)["choices"][0]["text"]
-        # Re-encode to match transformers output shape.
-        tokens = tok(out, return_tensors="pt")["input_ids"]
-        return tokens
+        # Re-encode with the same model tokenizer; return prompt+continuation so
+        # the shape matches transformers' generate() contract.
+        out_ids = self.model.tokenize(out.encode("utf-8"), add_bos=False)
+        return torch.tensor([ids + out_ids])
 
 
 # --------------------------------------------------------------------------- #

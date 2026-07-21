@@ -225,7 +225,8 @@ def benchmark_stack(model_id: str, dataset: str, max_len: int = 512,
             base_tps = tps
         results.append({"name": name, "tokens_per_s": tps,
                         "speedup": tps / base_tps if base_tps else 1.0})
-        log(f"  {name:32s} {tps:8.0f} tok/s   {tps/base_tps:5.2f}x")
+        log(f"  {name:32s} {tps:8.0f} tok/s   "
+            f"{(tps/base_tps if base_tps else 1.0):5.2f}x")
     return results
 
 

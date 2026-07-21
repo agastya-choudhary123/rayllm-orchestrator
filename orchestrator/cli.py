@@ -8,7 +8,9 @@ One command to train a model, one command to serve it.
     rayllm serve --model ./checkpoints/phi-3 --port 8000
 
 Training handles: checkpointing, quantization (LoRA), multi-GPU scaling via Ray+FSDP.
-Serving auto-selects the best backend for your hardware (MLX, vLLM, transformers).
+Serving scans your hardware and lets YOU choose the backend (MLX, vLLM,
+transformers, ...) -- pass --backend, or pick interactively. Run `rayllm
+backends` to see what's available on this machine.
 """
 
 import argparse
@@ -16,6 +18,8 @@ import sys
 
 from . import serve, train
 from .util import banner, log
+
+BACKEND_CHOICES = ["ollama", "mlx", "llama_cpp", "vllm", "transformers"]
 
 
 # --------------------------------------------------------------------------- #
@@ -50,6 +54,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Disable the fast-path optimization stack.")
     r.add_argument("--no-serve", action="store_true",
                    help="Train only; skip serving.")
+    r.add_argument("--backend", default=None, choices=BACKEND_CHOICES,
+                   help="Serving backend. If omitted, you'll pick from the "
+                        "backends available on this machine.")
 
     # ---- train -----------------------------------------------------------
     t = sub.add_parser("train", help="Fine-tune / train a model.")
@@ -83,8 +90,92 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--draft-model", default=None,
                    help="Small model for speculative decoding (MLX). Faster "
                         "generation, identical output. e.g. a 0.5B-1B.")
+    s.add_argument("--backend", default=None, choices=BACKEND_CHOICES,
+                   help="Serving backend. If omitted, you'll pick from the "
+                        "backends available on this machine. Run `rayllm "
+                        "backends` to see them first.")
+
+    # ---- backends --------------------------------------------------------
+    sub.add_parser("backends",
+                   help="Scan this machine and list available serving backends.")
 
     return p
+
+
+# --------------------------------------------------------------------------- #
+# Backend selection helpers
+# --------------------------------------------------------------------------- #
+def _print_backends(rows: list[dict]) -> None:
+    log("Available serving backends on this machine:")
+    for i, r in enumerate(rows, 1):
+        mark = "✓" if r["available"] else "✗"
+        rec = "  <- recommended for this model" if r.get("recommended") else ""
+        log(f"  {i}. [{mark}] {r['name']:14s} ({r['device']:14s}) "
+            f"{r['note']}{rec}")
+
+
+class BackendSelectionError(RuntimeError):
+    """Raised when no serving backend could be selected."""
+
+
+def _resolve_backend(requested: str | None, model: str) -> str:
+    """Return the backend to serve with. Selection is always the user's.
+
+    If `requested` is given (via --backend) it's validated against what's
+    actually available here. Otherwise the scanned backends are listed and the
+    user picks one interactively. There is no auto-selection.
+    """
+    from . import models
+
+    rows = models.scan_backends(model)
+    by_name = {r["name"]: r for r in rows}
+
+    if requested:
+        pick = by_name.get(requested)
+        if pick and not pick["available"]:
+            raise BackendSelectionError(
+                f"Backend '{requested}' isn't available here: {pick['note']}")
+        return requested
+
+    _print_backends(rows)
+    usable = [r for r in rows if r["available"]]
+    if not usable:
+        raise BackendSelectionError(
+            "No serving backend is available on this machine. Install one "
+            "(see notes above) and try again.")
+
+    # RECOMMENDED: the format-aware pick from scan_backends, but only if it's
+    # actually usable here; otherwise fall back to the fastest available one
+    # (scan order is fastest -> most compatible).
+    rec = next((r["name"] for r in usable if r.get("recommended")), None)
+    if rec is None:
+        rec = usable[0]["name"]
+
+    if not sys.stdin.isatty():
+        raise BackendSelectionError(
+            "No --backend given and this isn't an interactive terminal. "
+            f"Pass --backend (recommended: {rec}); available: "
+            + ", ".join(r["name"] for r in usable))
+
+    log(f"→ RECOMMENDED: {rec}  (press Enter to accept)")
+    while True:
+        try:
+            raw = input(f"Choose a backend by number [Enter = {rec}]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            raise BackendSelectionError("No backend selected.")
+        if not raw:
+            return rec
+        try:
+            pick = rows[int(raw) - 1]
+        except (ValueError, IndexError):
+            log("Not a valid choice; enter a listed number or Enter for the "
+                "recommended one.")
+            continue
+        if not pick["available"]:
+            log(f"'{pick['name']}' isn't available here ({pick['note']}). "
+                "Pick an available one.")
+            continue
+        return pick["name"]
 
 
 # --------------------------------------------------------------------------- #
@@ -113,10 +204,11 @@ def cmd_run(a: argparse.Namespace) -> int:
         log(f"Serve later with:  rayllm serve --model {ckpt}")
         return 0
 
+    override = _resolve_backend(a.backend, ckpt)
     log(f"→ Serving on http://localhost:{a.port} (Ctrl-C to stop)")
     return serve.run(model=ckpt, quant=a.quant, port=a.port, host="0.0.0.0",
                      tensor_parallel=1, max_model_len=2048,
-                     continuous_batching=True)
+                     continuous_batching=True, backend_override=override)
 
 
 def cmd_train(a: argparse.Namespace) -> int:
@@ -133,12 +225,20 @@ def cmd_train(a: argparse.Namespace) -> int:
 
 def cmd_serve(a: argparse.Namespace) -> int:
     banner("SERVE")
+    override = _resolve_backend(a.backend, a.model)
     return serve.run(
         model=a.model, quant=a.quant, port=a.port, host=a.host,
         tensor_parallel=a.tensor_parallel, max_model_len=a.max_model_len,
         continuous_batching=a.continuous_batching,
-        draft_model=a.draft_model,
+        draft_model=a.draft_model, backend_override=override,
     )
+
+
+def cmd_backends(a: argparse.Namespace) -> int:
+    from . import models
+    banner("BACKENDS")
+    _print_backends(models.scan_backends())
+    return 0
 
 
 # --------------------------------------------------------------------------- #
@@ -150,9 +250,13 @@ def main(argv=None) -> int:
         "run": cmd_run,
         "train": cmd_train,
         "serve": cmd_serve,
+        "backends": cmd_backends,
     }[args.command]
     try:
         return handler(args)
+    except BackendSelectionError as e:
+        log(f"Backend selection failed: {e}")
+        return 2
     except KeyboardInterrupt:
         log("Interrupted.")
         return 130

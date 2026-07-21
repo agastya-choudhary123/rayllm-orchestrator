@@ -130,7 +130,6 @@ def _serve_ollama(model: str, port: int, host: str) -> int:
                 prompt = "\n".join(f"{m['role']}: {m['content']}" for m in msgs)
                 max_tokens = int(req.get("max_tokens", 128))
                 temp = float(req.get("temperature", 0.7))
-                t0 = time.time()
                 resp = ollama.generate(model_name, prompt, stream=False,
                                        options={"temperature": temp,
                                                "num_predict": max_tokens})
@@ -141,7 +140,7 @@ def _serve_ollama(model: str, port: int, host: str) -> int:
                     "model": model_name,
                     "choices": [{"index": 0, "finish_reason": "stop",
                                  "message": {"role": "assistant", "content": text}}],
-                    "usage": {"completion_tokens": toks}
+                    "usage": {"completion_tokens": resp.get("eval_count", 0)}
                 })
             if self.path == "/v1/completions":
                 prompt = req.get("prompt", "")
@@ -337,6 +336,7 @@ def _serve_llama_cpp(model_path: str, port: int, host: str) -> int:
             out = llama(prompt, max_tokens=max_tokens, temperature=temp,
                        echo=False, top_p=0.95)
             text = out["choices"][0]["text"].strip()
+            toks = out.get("usage", {}).get("completion_tokens", 0)
             dt = time.time() - t0
 
             if self.path == "/v1/chat/completions":
