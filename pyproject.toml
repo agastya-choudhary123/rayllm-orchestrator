@@ -24,7 +24,11 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
 quantize = ["bitsandbytes>=0.43"]
-mlx = ["mlx>=0.18"]
+# backends_mlx.is_available() requires BOTH mlx and mlx-lm; psutil backs the
+# memory guard in set_memory_guard().
+mlx = ["mlx>=0.18", "mlx-lm>=0.18", "psutil>=5.9"]
+llama-cpp = ["llama-cpp-python>=0.2"]
+ollama = ["ollama>=0.1"]
 
 [project.scripts]
 rayllm = "orchestrator.cli:main"

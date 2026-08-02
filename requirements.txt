@@ -1,20 +1,19 @@
-# ML stack -- real training + serving. Runs on CPU/MPS or GPU.
+# Core runtime dependencies, mirroring [project].dependencies in pyproject.toml.
+#
+# pyproject.toml is the source of truth -- `pip install rayllm-orchestrator` and
+# `pip install -e .` both read it, and this file is here for the convenience of
+# `pip install -r requirements.txt`. If you change one, change the other.
 torch>=2.4
 transformers>=4.44
 datasets>=2.20
 peft>=0.12            # LoRA / QLoRA adapters
 accelerate>=0.33
-psutil>=5.9           # MLX memory guard on Apple Silicon
+sentencepiece>=0.1.99
 
-# Serving backends (optional, auto-detected)
-llama-cpp-python>=0.2  # GGUF support, CPU-efficient quantized inference
-ollama>=0.1           # Local model management + serving (any quant)
-
-# Apple Silicon native training + serving (auto-detected on macOS/arm64)
-mlx>=0.18             ; sys_platform == "darwin"
-mlx-lm>=0.18          ; sys_platform == "darwin"
-
-# GPU-node extras (installed on Linux/CUDA hosts for the fast paths).
-ray[default]>=2.35    ; sys_platform == "linux"
-vllm>=0.6.0           ; sys_platform == "linux"
-bitsandbytes>=0.43    ; sys_platform == "linux"
+# Serving backends are OPTIONAL and deliberately not pinned here -- `rayllm
+# backends` probes for what's installed. Install only the one you want:
+#
+#   pip install 'rayllm-orchestrator[mlx]'        # Apple Silicon (mlx, mlx-lm, psutil)
+#   pip install 'rayllm-orchestrator[llama-cpp]'  # GGUF via llama.cpp
+#   pip install 'rayllm-orchestrator[ollama]'     # local Ollama daemon
+#   pip install 'rayllm-orchestrator[quantize]'   # bitsandbytes 4/8-bit (CUDA)

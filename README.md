@@ -35,9 +35,9 @@ separately — you only need the one(s) you want:
 | Backend | Extra install | Where it runs |
 |---------|---------------|---------------|
 | transformers | (included) | CPU, Apple MPS; works with CUDA if installed |
-| MLX | `pip install mlx mlx-lm` | Apple Silicon (arm64 macOS) |
-| llama.cpp | `pip install llama-cpp-python` | CPU, Metal on macOS — GGUF models |
-| Ollama | install [Ollama](https://ollama.com) + `pip install ollama` | uses the local Ollama daemon |
+| MLX | `pip install 'rayllm-orchestrator[mlx]'` | Apple Silicon (arm64 macOS) |
+| llama.cpp | `pip install 'rayllm-orchestrator[llama-cpp]'` | CPU, Metal on macOS — GGUF models |
+| Ollama | install [Ollama](https://ollama.com) + `pip install 'rayllm-orchestrator[ollama]'` | uses the local Ollama daemon |
 
 ### From source
 ```bash
@@ -45,14 +45,6 @@ git clone https://github.com/agastya-choudhary123/rayllm-orchestrator
 cd rayllm-orchestrator
 pip install -e .
 python orchestrator.py train --model gpt2 --dataset my-data.jsonl
-```
-
-### Docker
-The repo ships a `Dockerfile` (and `Dockerfile.cpu`) you build locally — there is
-no prebuilt image published to a registry:
-```bash
-docker build -t rayllm .
-docker run -it rayllm train --model gpt2 --dataset my-data.jsonl --epochs 3
 ```
 
 ---
