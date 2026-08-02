@@ -1,277 +1,194 @@
-# RayLLM-Orchestrator
+# rayllm-orchestrator
 
-Fine-tune an LLM on your data and serve it as an API. One command to train, one to serve.
+Fine-tune a small LLM on your own data and serve it behind an OpenAI-compatible
+API. Runs on a laptop, no GPU required.
 
 ```bash
-rayllm train --model gpt2 --dataset my-data.jsonl --epochs 3
-rayllm serve --model ./checkpoints/gpt2 --port 8000
+pip install rayllm-orchestrator
 
-# Test it
+rayllm train --model gpt2 --dataset my-data.jsonl --epochs 3
+rayllm serve --model ./checkpoints/gpt2
+```
+
+```bash
 curl -X POST http://localhost:8000/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"messages":[{"role":"user","content":"Hello"}]}'
 ```
 
----
+Training uses LoRA/QLoRA and writes a checkpoint after every epoch. On Apple
+Silicon it runs through MLX, everywhere else through PyTorch. Serving works with
+whichever backend you have installed: MLX, transformers, llama.cpp, or Ollama.
 
-## What it does
+## Install
 
-**Train**: PyTorch fine-tuning with LoRA/QLoRA, checkpointing, resume from epoch. On Apple Silicon, native MLX path. Falls back to PyTorch otherwise.
+The base install pulls torch, transformers, datasets, peft, and accelerate.
+Serving backends are separate, so you only download the one you need.
 
-**Serve**: OpenAI-compatible API. Pick your backend (MLX, transformers, llama.cpp, or Ollama).
+| Backend | Install | Runs on |
+|---|---|---|
+| transformers | included | CPU, Apple MPS, CUDA |
+| MLX | `pip install 'rayllm-orchestrator[mlx]'` | Apple Silicon |
+| llama.cpp | `pip install 'rayllm-orchestrator[llama-cpp]'` | CPU and Metal, GGUF models |
+| Ollama | [Ollama](https://ollama.com) plus `pip install 'rayllm-orchestrator[ollama]'` | the local Ollama daemon |
 
----
+From source:
 
-## Installation
-
-```bash
-pip install rayllm-orchestrator
-```
-
-This installs the core stack: `torch`, `transformers`, `datasets`, `peft`,
-`accelerate`. The serving backends below are **optional** and installed
-separately — you only need the one(s) you want:
-
-| Backend | Extra install | Where it runs |
-|---------|---------------|---------------|
-| transformers | (included) | CPU, Apple MPS; works with CUDA if installed |
-| MLX | `pip install 'rayllm-orchestrator[mlx]'` | Apple Silicon (arm64 macOS) |
-| llama.cpp | `pip install 'rayllm-orchestrator[llama-cpp]'` | CPU, Metal on macOS — GGUF models |
-| Ollama | install [Ollama](https://ollama.com) + `pip install 'rayllm-orchestrator[ollama]'` | uses the local Ollama daemon |
-
-### From source
 ```bash
 git clone https://github.com/agastya-choudhary123/rayllm-orchestrator
 cd rayllm-orchestrator
 pip install -e .
-python orchestrator.py train --model gpt2 --dataset my-data.jsonl
 ```
 
----
+## Preparing data
 
-## Quick Start
+JSONL, one object per line. Any of these shapes work:
 
-### 1. Prepare your data
-
-JSONL, one object per line. Supported shapes: `{"text": ...}`,
-`{"prompt": ..., "completion": ...}`, or `{"messages": [...]}`.
 ```json
-{"text": "Your training example here."}
-{"text": "Another example."}
+{"text": "A plain training example."}
+{"prompt": "Classify this review.", "completion": "positive"}
+{"messages": [{"role": "user", "content": "..."}]}
 ```
 
-Or point at a HuggingFace dataset id:
+Field names are matched loosely, so `instruction`/`output` and `question`/`answer`
+work too. You can also pass a HuggingFace dataset id instead of a file:
+
 ```bash
 rayllm train --model gpt2 --dataset wikitext --epochs 1
 ```
 
-### 2. Train
-```bash
-rayllm train --model gpt2 --dataset my-data.jsonl --epochs 3 --quant 4bit
-```
-Downloads the model, tokenizes your data, trains (saving a checkpoint after each
-epoch), and prints the checkpoint path. With `--quant`, base weights load in
-4/8-bit and only LoRA adapters train (QLoRA); the PyTorch path merges the
-adapters into a plain HuggingFace checkpoint the serving layer loads directly.
+## Commands
 
-### 3. Serve
-```bash
-rayllm serve --model ./checkpoints/gpt2 --port 8000
-```
-Prompts you to choose a backend from what's installed (or pass `--backend`),
-then starts an OpenAI-compatible API on port 8000.
+**`train`** downloads the model, tokenizes, trains, and prints the checkpoint path.
 
-### 4. Use it
-```bash
-curl -X POST http://localhost:8000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"messages":[{"role":"user","content":"Write a haiku about coding"}],"max_tokens":50}'
+```
+rayllm train --model <id-or-path> --dataset <id-or-path.jsonl>
+             [--epochs N] [--quant none|8bit|4bit] [--lr LR] [--out DIR]
 ```
 
----
+Defaults are `--epochs 1`, `--quant none`, `--lr 2e-5`, `--out ./checkpoints`.
+With `--quant`, base weights load in 4- or 8-bit and only LoRA adapters train.
+The PyTorch path then merges those adapters back into a plain HuggingFace
+checkpoint, so serving needs no special handling.
 
-## Choosing a backend
+**`serve`** starts an OpenAI-compatible API on port 8000.
 
-List what's actually usable on your machine:
-```bash
-rayllm backends
 ```
-Example output — availability is probed live (installed **and** runnable here),
-and a format-aware recommendation is marked:
+rayllm serve --model <checkpoint-or-id>
+             [--backend ollama|mlx|llama_cpp|transformers]
+             [--port 8000] [--host 0.0.0.0] [--draft-model <id>]
 ```
+
+Without `--backend` you get an interactive prompt listing what's available.
+
+**`run`** does both in one shot.
+
+```
+rayllm run --model <id-or-path> --data <id-or-path.jsonl>
+           [--epochs N] [--port 8000] [--backend ...] [--no-serve]
+```
+
+**`backends`** reports which backends this machine can actually use.
+
+```
+$ rayllm backends
 1. [✗] ollama         needs the ollama daemon running
 2. [✓] mlx            Apple-Silicon-native            <- recommended for this model
 3. [✗] llama_cpp      `pip install llama-cpp-python`
 4. [✓] transformers   universal fallback
 ```
 
-Then either let `serve`/`run` prompt you (it offers the recommended one as the
-Enter-default), or force a choice:
-```bash
-rayllm serve --model ./checkpoints/gpt2 --backend transformers
-```
+Availability is probed live, so a backend is only marked usable if it's both
+installed and runnable here.
 
----
+## Speculative decoding
 
-## Common Use Cases
+On the MLX backend, a small draft model can propose tokens for a larger model to
+verify. Output is identical, generation is faster.
 
-### Apple Silicon (MLX)
-```bash
-pip install mlx mlx-lm
-rayllm serve --model mlx-community/Qwen2.5-0.5B-Instruct-4bit --backend mlx
-```
-MLX is Apple's Metal-native framework and keeps 4-bit models memory-safe in
-unified memory (a guard caps its cache so training can't starve the OS). See
-[measured numbers](#measured-performance).
-
-### Fine-tune with quantization (QLoRA)
-```bash
-rayllm train --model meta-llama/Llama-3.2-3B --dataset my-data.jsonl --quant 4bit
-```
-Loads base weights in 4-bit and trains only the LoRA adapters — far fewer
-trainable parameters and lower memory than full fine-tuning.
-
-### Speculative decoding (MLX)
 ```bash
 rayllm serve --model <large-mlx-model> --draft-model <small-mlx-model> --backend mlx
 ```
-A small draft model proposes tokens the large model verifies — faster generation
-with identical output. MLX backend only.
 
----
+## Does fine-tuning help?
 
-## Command Reference
-
-### `train`
-```
-rayllm train --model <id-or-path> --dataset <id-or-path.jsonl>
-  [--epochs N] [--quant none|8bit|4bit] [--lr LR] [--out DIR]
-```
-Defaults: `--epochs 1`, `--quant none`, `--lr 2e-5`, `--out ./checkpoints`.
-Raise `--lr` to learn faster from little data; lower it if fine-tuning makes the
-model worse at the task (see [Does fine-tuning actually help?](#does-fine-tuning-actually-help)).
-
-### `serve`
-```
-rayllm serve --model <checkpoint-or-id>
-  [--backend ollama|mlx|llama_cpp|transformers]
-  [--quant ...] [--port 8000] [--host 0.0.0.0]
-  [--max-model-len 4096] [--draft-model <id>]
-```
-If `--backend` is omitted you're prompted to choose (interactive terminals only).
-
-### `run`
-```
-rayllm run --model <id-or-path> --data <id-or-path.jsonl>
-  [--epochs N] [--port 8000] [--backend ...] [--no-serve] [--no-fast]
-```
-Fine-tune, then serve in one shot.
-
-### `backends`
-```
-rayllm backends
-```
-Scan this machine and list which serving backends are available.
-
----
-
-## Hardware Support
-
-| Hardware | Train | Serve | Notes |
-|----------|-------|-------|-------|
-| CPU (any OS) | ✓ | ✓ | Tested; ~20 tok/s on CPU |
-| Apple Silicon | ✓ | ✓ | Optimized via MLX; ~150-300 tok/s |
-
----
-
-## Does fine-tuning actually work?
-
-Yes, but only if the base model is bad at the task. We measured this.
-
-500 training examples, 1 epoch, tested on 200 held-out examples. Full reproducible
-harness in [examples/eval/](examples/eval/).
+Only when the base model is bad at the task. Measured across the model-size ladder
+with 500 training examples, 1 epoch, and 200 held-out test examples:
 
 | Model | Emotion (6 labels) | Banking77 (77 intents) |
 |---|:---:|:---:|
-| 0.135B | 20.5% → **67.0%** | 2.5% → *(pending)* |
-| 0.5B | 31.0% → **74.5%** | 2.5% → *(pending)* |
-| 1.5B | *(running)* | *(running)* |
-| 3B | *(pending)* | *(pending)* |
-| 8B | *(pending)* | — |
+| 0.135B | 20.5% → **67.0%** | 2.5% → **27.0%** |
+| 0.5B | 31.0% → **70.5%** | 2.5% → **57.5%** |
+| 1.5B | 34.0% → **65.5%** | 29.0% → **64.5%** |
+| 3B | 47.5% → **72.0%** | 49.0% → **70.5%** |
+| 8B | 0% → **62.0%** | — |
 
-Majority baselines: emotion 37%, banking77 3%.
+The pattern is clear: fine-tuning works when the base model is bad at the task.
+On emotion, all models improve by 20–47 points. On banking77, smaller models jump
+40–55 points from near-random, but once the base reaches 49% (3B), the gain
+shrinks to 21 points.
 
-**The take:**
+Majority baselines: emotion 37%, banking77 3%. Run the base-model eval first to
+know which case you're in.
 
-Fine-tuning gets you +46 points when the model starts at 20%. It does nothing when
-the model already scores 90%. Run the base-model eval first to know which case
-you're in.
+Two things learned the hard way:
 
-Learning rate matters a lot. The old default (hardcoded, hidden, `1e-4`) made the
-0.5B model 23 points worse on emotion. New default is `2e-5`, and it's now a
-`--lr` flag you can change.
+**Learning rate matters most.** At `--lr 1e-4` (the old default), a 0.5B model
+on emotion scores 51% instead of 70.5%—destroyed 19 points on a task it should
+improve. The new default `2e-5` is safe. If accuracy drops after fine-tuning,
+lower `--lr` before changing anything else.
 
-The `val_loss → healthy` line the trainer prints is not a quality signal. It
-ranked a 75% run better than a 91.5% run. Use an eval script, not training curves.
+**Val loss is a training diagnostic, not a quality signal.** It ranked a 51% run
+better than a 70.5% run. Use an eval script with ground truth labels.
 
----
+The full harness and method are in [examples/eval/](examples/eval/).
 
-## Measured Performance
+## Performance
 
-Serving throughput on one Apple Silicon Mac (MLX, 4-bit weights, 120-token outputs):
+Serving throughput on one Apple Silicon Mac, MLX backend, 4-bit weights,
+120-token outputs:
 
 | Model | Throughput | Memory |
-|-------|-----------:|-------:|
+|---|---:|---:|
 | Qwen2.5-0.5B-Instruct-4bit | ~276 tok/s | 0.33 GB |
 | Qwen3-0.6B-4bit | ~240 tok/s | 0.44 GB |
 | Qwen3-8B-4bit | ~22 tok/s | 4.72 GB |
 
-Your numbers will differ based on model, quantization, prompt length, and hardware.
-Benchmark on your own setup.
-
----
+CPU serving runs closer to 20 tok/s. Your numbers will differ with model,
+quantization, prompt length, and hardware, so benchmark your own setup.
 
 ## Troubleshooting
 
-**`No module named 'torch'`** — install the core stack: `pip install rayllm-orchestrator` (or `pip install torch transformers datasets peft accelerate`).
+**`No module named 'torch'`**
+Install the core stack: `pip install rayllm-orchestrator`.
 
-**Out of memory during training** — use quantization: add `--quant 4bit`.
+**Out of memory while training**
+Add `--quant 4bit` to load base weights quantized and train only adapters.
 
-**"No serving backend is available"** — run `rayllm backends` to see what's
-installed, then install one (e.g. `pip install mlx-lm` on a Mac) or pass
+**"No serving backend is available"**
+Run `rayllm backends` to see what's missing, then install one of them or pass
 `--backend transformers`.
 
-**Serve doesn't respond** — check it's up: `curl http://localhost:8000/v1/models`.
+**Server doesn't respond**
+Check it came up: `curl http://localhost:8000/v1/models`.
 
----
-
-## Architecture
+## Project layout
 
 ```
-orchestrator.py            ← thin shim (python orchestrator.py ...)
 orchestrator/
-├── cli.py                ← the `rayllm` command (train / serve / run / backends)
-├── train.py              ← training loop + MLX/torch dispatch, fallback
-├── serve.py              ← serving + backend dispatch (OpenAI-compatible API)
-├── models.py             ← model loading + backend detection/selection
-├── data.py               ← tokenization, packing/bucketing
-├── fast.py               ← bf16, prefetch, packing, LoRA optimizations
-├── backends_mlx.py       ← Apple Silicon native train + serve (MLX)
-└── util.py               ← logging, capability detection
+├── cli.py           the rayllm command: train / serve / run / backends
+├── train.py         training loop, MLX and torch dispatch
+├── serve.py         OpenAI-compatible API, backend dispatch
+├── models.py        model loading, backend detection
+├── data.py          tokenization, packing and bucketing
+├── fast.py          bf16, prefetch, packing, LoRA options
+├── backends_mlx.py  Apple Silicon train and serve
+└── util.py          logging, capability detection
 
-examples/eval/            ← downstream accuracy eval (base vs fine-tuned)
+examples/eval/       accuracy eval, base model vs fine-tuned
+orchestrator.py      shim so `python orchestrator.py ...` still works
 ```
-
-Core dependencies: `torch`, `transformers`, `datasets`, `peft`, `accelerate`.
-Backends (MLX, llama.cpp, Ollama) are optional and installed as needed.
-
----
 
 ## License
 
-MIT. Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## See Also
-
-- [MLX](https://github.com/ml-explore/mlx) — Apple Silicon ML framework
-- [Hugging Face](https://huggingface.co) — models & datasets
+MIT. Contributions welcome, see [CONTRIBUTING.md](CONTRIBUTING.md).
