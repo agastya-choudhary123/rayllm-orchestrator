@@ -1,20 +1,14 @@
 """Training layer -- real fine-tuning.
 
-`run()` dispatches on strategy:
-
-  * single         : real single-device training loop (CPU or 1 GPU).
-  * fsdp-ray       : Ray Train + PyTorch FSDP across N GPU workers.
-  * deepspeed-ray  : Ray Train + DeepSpeed ZeRO-3.
-
-All three run genuine training: tokenized DataLoader, forward/backward, AdamW,
-gradient accumulation, real loss, periodic checkpoints (fault tolerance +
-resume), and a final HuggingFace checkpoint that the serving layer loads
-directly. Throughput is logged as training progresses.
+Single-device training loop (CPU or 1 GPU): tokenized DataLoader, forward/backward,
+AdamW, gradient accumulation, real loss, periodic checkpoints (fault tolerance +
+resume), and a final HuggingFace checkpoint that the serving layer loads directly.
+Throughput is logged as training progresses.
 
 Quantization: with --quant 4bit/8bit we load the base weights quantized
 (bitsandbytes) and train LoRA adapters (QLoRA). At the end the adapters are
 merged back into the base weights so the checkpoint is a plain HF model that any
-runtime (vLLM, transformers) can serve with no adapter juggling.
+serving backend can load with no adapter juggling.
 """
 
 from __future__ import annotations
@@ -46,7 +40,7 @@ def run(model: str, dataset: str, epochs: int, strategy: str, quant: str,
         os.makedirs(ckpt_dir_mlx, exist_ok=True)
         try:
             return _train_mlx(m, dataset, epochs, ckpt_dir_mlx, opt, max_len,
-                              max_examples)
+                              max_examples, lr)
         except Exception as e:
             if not (have("torch") and have("transformers")):
                 raise RuntimeError(
@@ -78,12 +72,7 @@ def run(model: str, dataset: str, epochs: int, strategy: str, quant: str,
     log(f"Strategy={strategy} workers={workers} quant={quant} "
         f"lora={use_lora} gpus={gpu_count()}")
 
-    if strategy in ("fsdp-ray", "deepspeed-ray") and have("ray") and gpu_count() > 1:
-        _train_ray(cfg, strategy, workers, ckpt_dir)
-    else:
-        if strategy != "single":
-            log(f"Note: '{strategy}' needs Ray + >1 GPU; using single-device loop.")
-        _train_single(cfg, ckpt_dir)
+    _train_single(cfg, ckpt_dir)
 
     _write_manifest(ckpt_dir, m, quant, strategy)
     return ckpt_dir
@@ -102,7 +91,8 @@ def _mlx_ok(model_id: str) -> bool:
     return resolve_model(model_id)["params_b"] <= 4
 
 
-def _train_mlx(m, dataset, epochs, ckpt_dir, opt, max_len=1024, max_examples=None):
+def _train_mlx(m, dataset, epochs, ckpt_dir, opt, max_len=1024, max_examples=None,
+               lr: float = 2e-5):
     """Apple-Silicon LoRA fine-tune via mlx-lm (see backends_mlx.train_mlx)."""
     from . import backends_mlx, data
     records = data.load_records(dataset, max_examples=max_examples)
@@ -110,7 +100,7 @@ def _train_mlx(m, dataset, epochs, ckpt_dir, opt, max_len=1024, max_examples=Non
 
     backends_mlx.train_mlx(
         m["hf"], records, ckpt_dir, epochs=epochs,
-        batch_size=1, max_seq_len=max_len)
+        batch_size=1, max_seq_len=max_len, lr=lr)
     return ckpt_dir
 
 
@@ -225,57 +215,6 @@ def _train_single(cfg: dict, ckpt_dir: str):
 # --------------------------------------------------------------------------- #
 # Ray Train + FSDP / DeepSpeed (multi-GPU)
 # --------------------------------------------------------------------------- #
-def _train_ray(cfg: dict, strategy: str, workers: int, ckpt_dir: str):
-    import ray
-    from ray.train import RunConfig, ScalingConfig
-    from ray.train.torch import TorchTrainer
-
-    log(f"Initializing Ray for {workers}-worker {strategy}...")
-    ray.init(ignore_reinit_error=True)
-
-    def loop(config):
-        import torch
-        from ray import train
-        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-        from torch.distributed.fsdp import MixedPrecision
-
-        rank = train.get_context().get_world_rank()
-        model, tok = build_model_and_tokenizer(config, "cuda")
-        if strategy == "fsdp-ray" and not config["use_lora"]:
-            model = FSDP(model, mixed_precision=MixedPrecision(
-                param_dtype=torch.bfloat16, reduce_dtype=torch.bfloat16))
-        records = data.load_records(config["dataset"],
-                                    max_examples=config.get("max_examples"))
-        loader = data.build_dataloader(records, tok,
-                                       batch_size=config["batch_size"],
-                                       max_len=config["max_len"])
-        loader = train.torch.prepare_data_loader(loader)
-        opt = torch.optim.AdamW(
-            [p for p in model.parameters() if p.requires_grad], lr=config["lr"])
-
-        for epoch in range(config["epochs"]):
-            model.train()
-            opt.zero_grad()
-            for i, batch in enumerate(loader):
-                out = model(**batch)
-                (out.loss / config["grad_accum"]).backward()
-                if (i + 1) % config["grad_accum"] == 0:
-                    opt.step()
-                    opt.zero_grad()
-                train.report({"epoch": epoch, "loss": out.loss.item()})
-            if rank == 0:
-                _save_final(model, tok, config["out"], config)
-
-    trainer = TorchTrainer(
-        loop,
-        train_loop_config=cfg,
-        scaling_config=ScalingConfig(num_workers=workers, use_gpu=True),
-        run_config=RunConfig(storage_path=os.path.abspath(ckpt_dir)),
-    )
-    result = trainer.fit()
-    log(f"Ray training finished: {result.metrics}")
-
-
 # --------------------------------------------------------------------------- #
 # Checkpointing / resume / final save
 # --------------------------------------------------------------------------- #

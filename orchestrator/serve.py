@@ -78,8 +78,6 @@ def run(model: str, quant: str, port: int, host: str, tensor_parallel: int,
         return _serve_mlx(model, port, host)
     elif backend == "llama_cpp":
         return _serve_llama_cpp(model, port, host)
-    elif backend == "vllm":
-        return _serve_vllm(model, quant, port, host, tensor_parallel, max_model_len)
     elif backend == "transformers":
         return _serve_transformers(model, quant, port, host, max_model_len,
                                    continuous_batching)
@@ -361,30 +359,6 @@ def _serve_llama_cpp(model_path: str, port: int, host: str) -> int:
     except KeyboardInterrupt:
         srv.shutdown()
     return 0
-
-
-# --------------------------------------------------------------------------- #
-# vLLM backend
-# --------------------------------------------------------------------------- #
-def _serve_vllm(model, quant, port, host, tp, max_model_len) -> int:
-    import subprocess
-    import sys
-    # Clamp requested context to the model's real max positions so vLLM never
-    # errors out (e.g. gpt2 is 1024). Reads config.json if present.
-    max_model_len = _clamp_ctx(model, max_model_len)
-    qflag = []
-    if quant == "4bit":
-        qflag = ["--quantization", "bitsandbytes", "--load-format", "bitsandbytes"]
-    elif quant == "awq":
-        qflag = ["--quantization", "awq"]
-    elif quant == "gptq":
-        qflag = ["--quantization", "gptq"]
-    cmd = [sys.executable, "-m", "vllm.entrypoints.openai.api_server",
-           "--model", model, "--host", host, "--port", str(port),
-           "--tensor-parallel-size", str(tp),
-           "--max-model-len", str(max_model_len), *qflag]
-    log("Exec: " + " ".join(cmd))
-    return subprocess.call(cmd)
 
 
 # --------------------------------------------------------------------------- #

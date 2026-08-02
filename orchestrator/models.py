@@ -107,8 +107,7 @@ def select_serving_backend(model_id: str):
       1. Ollama (model management + serving, Metal on macOS)
       2. MLX (Apple Silicon native, faster than PyTorch MPS)
       3. llama.cpp (GGUF + CPU, Metal on macOS)
-      4. vLLM (CPU backend via Ray, or GPU)
-      5. transformers (fallback, CPU/GPU/MPS)
+      4. transformers (CPU/GPU/MPS)
     """
     spec = ModelSpec(model_id)
 
@@ -138,25 +137,13 @@ def select_serving_backend(model_id: str):
             log("GGUF found but llama-cpp-python not installed. "
                 "Install with: pip install llama-cpp-python")
 
-    # vLLM: its real value is GPU continuous batching. Only auto-select it when
-    # CUDA is present -- on a CPU/MPS laptop it's slow to boot and transformers
-    # gives far better UX. (Force it anywhere with --backend vllm.)
-    if have("vllm") and not spec.is_gguf:
-        try:
-            import torch
-            if torch.cuda.is_available():
-                log("vLLM + CUDA available: continuous-batching backend selected")
-                return "vllm", spec
-        except Exception:
-            pass
-
     # transformers: fast, reliable fallback for any device (CPU/GPU/MPS)
     if have("torch") and have("transformers"):
         return "transformers", spec
 
     raise RuntimeError(
         f"Cannot serve '{model_id}'. No compatible backend found. "
-        f"Install one of: ollama, llama-cpp-python, vllm, or torch+transformers.")
+        f"Install one of: ollama, llama-cpp-python, or torch+transformers.")
 
 
 # --------------------------------------------------------------------------- #
@@ -225,12 +212,6 @@ def scan_backends(model_id: str | None = None) -> list[dict]:
          "device": "cpu/metal",
          "note": "GGUF models; Metal on macOS"
                  if have("llama_cpp") else "`pip install llama-cpp-python`"},
-        {"name": "vllm", "available": have("vllm") and _cuda(),
-         "device": accel,
-         "note": "continuous batching, best on CUDA"
-                 if have("vllm") and _cuda()
-                 else ("installed but no CUDA GPU found" if have("vllm")
-                       else "`pip install vllm` (needs a CUDA GPU)")},
         {"name": "transformers", "available": have("torch") and have("transformers"),
          "device": accel,
          "note": f"universal fallback on {accel}"

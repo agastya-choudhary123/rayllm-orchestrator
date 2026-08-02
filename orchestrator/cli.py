@@ -7,10 +7,10 @@ One command to train a model, one command to serve it.
     rayllm train --model phi-3 --dataset my-data --epochs 3
     rayllm serve --model ./checkpoints/phi-3 --port 8000
 
-Training handles: checkpointing, quantization (LoRA), multi-GPU scaling via Ray+FSDP.
-Serving scans your hardware and lets YOU choose the backend (MLX, vLLM,
-transformers, ...) -- pass --backend, or pick interactively. Run `rayllm
-backends` to see what's available on this machine.
+Training handles: checkpointing, quantization (LoRA), and resume from checkpoints.
+Serving scans your hardware and lets YOU choose the backend (MLX, transformers, ...)
+-- pass --backend, or pick interactively. Run `rayllm backends` to see what's
+available on this machine.
 """
 
 import argparse
@@ -19,7 +19,7 @@ import sys
 from . import serve, train
 from .util import banner, log
 
-BACKEND_CHOICES = ["ollama", "mlx", "llama_cpp", "vllm", "transformers"]
+BACKEND_CHOICES = ["ollama", "mlx", "llama_cpp", "transformers"]
 
 
 # --------------------------------------------------------------------------- #
@@ -48,6 +48,9 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--max-examples", type=int, default=None,
                    help="Cap dataset size (keeps laptop training bounded).")
     r.add_argument("--quant", default="none", choices=["none", "8bit", "4bit"])
+    r.add_argument("--lr", type=float, default=2e-5,
+                   help="Learning rate. Higher learns faster but can degrade a "
+                        "model that already does the task well; lower is safer.")
     r.add_argument("--out", default="./checkpoints")
     r.add_argument("--port", type=int, default=8000)
     r.add_argument("--no-fast", action="store_true",
@@ -65,12 +68,15 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--dataset", required=True,
                    help="HF dataset id or local jsonl path.")
     t.add_argument("--epochs", type=int, default=1)
-    t.add_argument("--strategy", default="fsdp-ray",
-                   choices=["single", "fsdp-ray", "deepspeed-ray"],
-                   help="Distributed training backend.")
+    t.add_argument("--strategy", default="single",
+                   choices=["single"],
+                   help="Training backend (single-device).")
     t.add_argument("--quant", default="none",
                    choices=["none", "8bit", "4bit"],
                    help="Load base weights quantized to save VRAM (QLoRA-style).")
+    t.add_argument("--lr", type=float, default=2e-5,
+                   help="Learning rate. Higher learns faster but can degrade a "
+                        "model that already does the task well; lower is safer.")
     t.add_argument("--out", default="./checkpoints",
                    help="Where to write checkpoints.")
     t.add_argument("--num-workers", type=int, default=0,
@@ -196,7 +202,7 @@ def cmd_run(a: argparse.Namespace) -> int:
     ckpt = train.run(
         model=a.model, dataset=a.data, epochs=a.epochs,
         strategy="single", quant=a.quant, out=a.out, opt=cfg,
-        max_len=a.ctx, max_examples=a.max_examples,
+        max_len=a.ctx, max_examples=a.max_examples, lr=a.lr,
     )
     log(f"✓ Fine-tune complete: {ckpt}")
 
@@ -216,7 +222,7 @@ def cmd_train(a: argparse.Namespace) -> int:
     ckpt = train.run(
         model=a.model, dataset=a.dataset, epochs=a.epochs,
         strategy=a.strategy, quant=a.quant, out=a.out,
-        num_workers=a.num_workers,
+        num_workers=a.num_workers, lr=a.lr,
     )
     log(f"Training complete. Checkpoint: {ckpt}")
     log(f"Serve it with:  rayllm serve --model {ckpt}")

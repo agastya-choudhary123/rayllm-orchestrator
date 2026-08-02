@@ -10,7 +10,7 @@ Thanks for your interest in contributing! Here's how to help.
 
 ### New Hardware Support
 - Works great on your GPU/Mac but we don't have it documented?
-- Add instructions to README.md or BACKENDS.md
+- Add instructions to README.md
 - Include: hardware specs, expected tok/s, any special config
 
 ### Documentation

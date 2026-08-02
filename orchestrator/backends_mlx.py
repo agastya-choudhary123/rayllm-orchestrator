@@ -85,7 +85,7 @@ def _build_dataset(records, tokenizer):
 # --------------------------------------------------------------------------- #
 def train_mlx(model_id: str, records: list, out_dir: str, epochs: int = 3,
               batch_size: int = 1, max_seq_len: int = 1024, lora_layers: int = 16,
-              lora_rank: int = 8, lr: float = 1e-4, mem_limit_gb: float | None = None,
+              lora_rank: int = 8, lr: float = 2e-5, mem_limit_gb: float | None = None,
               val_fraction: float = 0.1, seed: int = 0, progress=None) -> str:
     """LoRA fine-tune on Apple Silicon via mlx-lm. Saves adapters + manifest.
 

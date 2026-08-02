@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rayllm-orchestrator"
-version = "0.1.0"
-description = "Train and serve LLMs on any hardware with one command each"
+version = "0.3.0"
+description = "Fine-tune and serve small LLMs on your laptop"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
@@ -18,15 +18,12 @@ dependencies = [
     "datasets>=2.20",
     "peft>=0.12",
     "accelerate>=0.33",
+    "sentencepiece>=0.1.99",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
-gpu = [
-    "ray[default]>=2.35",
-    "vllm>=0.6.0",
-    "bitsandbytes>=0.43",
-]
+quantize = ["bitsandbytes>=0.43"]
 mlx = ["mlx>=0.18"]
 
 [project.scripts]

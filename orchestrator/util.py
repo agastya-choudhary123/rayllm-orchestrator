@@ -51,12 +51,8 @@ def gpu_count() -> int:
 def capabilities() -> dict:
     return {
         "torch": have("torch"),
-        "ray": have("ray"),
-        "vllm": have("vllm"),
         "transformers": have("transformers"),
         "gpus": gpu_count(),
-        "numactl": have_cmd("numactl"),
-        "taskset": have_cmd("taskset"),
     }
 
 
