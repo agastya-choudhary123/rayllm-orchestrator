@@ -76,7 +76,8 @@ checkpoint, so serving needs no special handling.
 ```
 rayllm serve --model <checkpoint-or-id>
              [--backend ollama|mlx|llama_cpp|transformers]
-             [--port 8000] [--host 0.0.0.0] [--draft-model <id>]
+             [--port 8000] [--host 0.0.0.0] [--max-model-len 4096]
+             [--draft-model <id>]
 ```
 
 Without `--backend` you get an interactive prompt listing what's available.
@@ -123,25 +124,34 @@ with 500 training examples, 1 epoch, and 200 held-out test examples:
 | 3B | 47.5% → **72.0%** | 49.0% → **70.5%** |
 | 8B | 0% → **62.0%** | — |
 
-The pattern is clear: fine-tuning works when the base model is bad at the task.
-On emotion, all models improve by 20–47 points. On banking77, smaller models jump
-40–55 points from near-random, but once the base reaches 49% (3B), the gain
-shrinks to 21 points.
+Majority baselines are 37% for emotion and 3% for banking77, so every base model
+except the 3B on banking77 starts at or below the score you'd get by guessing the
+most common label.
 
-Majority baselines: emotion 37%, banking77 3%. Run the base-model eval first to
-know which case you're in.
+The size of the gain tracks how bad the base model was, not how big it is. On
+emotion the smallest model gains the most (+46.5 at 0.135B) and the strongest
+base gains the least (+24.5 at 3B). Banking77 shows the same shape: +55.0 for the
+0.5B starting from 2.5%, down to +21.5 for the 3B already at 49%. Run the
+base-model eval first, so you know which case you're in.
 
-Two things learned the hard way:
+The 8B base scored 0%, which means no response parsed to exactly one label.
+That's a formatting failure rather than wrong answers, and it's what fine-tuning
+fixes first.
 
-**Learning rate matters most.** At `--lr 1e-4` (the old default), a 0.5B model
-on emotion scores 51% instead of 70.5%—destroyed 19 points on a task it should
-improve. The new default `2e-5` is safe. If accuracy drops after fine-tuning,
-lower `--lr` before changing anything else.
+Two things learned the hard way, both from an earlier single-task sweep on the
+0.5B (measured at 74.5% on emotion under those settings, documented in full in
+[examples/eval/](examples/eval/)):
 
-**Val loss is a training diagnostic, not a quality signal.** It ranked a 51% run
-better than a 70.5% run. Use an eval script with ground truth labels.
+**Learning rate matters most.** At `--lr 1e-4`, the old default, that run scored
+51.0% on emotion instead of 74.5%, and 75.0% on SST-2 instead of 91.5%. The
+SST-2 case is the alarming one: fine-tuning made a model 16.5 points worse at a
+task it already handled. The default is now `2e-5`. If accuracy drops after
+fine-tuning, lower `--lr` before changing anything else.
 
-The full harness and method are in [examples/eval/](examples/eval/).
+**Val loss is a training diagnostic, not a quality signal.** On SST-2 it ranked
+the two runs backwards: the 75.0% run reported `val_loss=0.041`, better than the
+91.5% run's `0.044`, and labelled both "healthy". Use an eval script with ground
+truth labels.
 
 ## Performance
 

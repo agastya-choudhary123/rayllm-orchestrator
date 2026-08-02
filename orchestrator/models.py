@@ -76,9 +76,12 @@ def load_for_training(model_id: str, quant: str = "none", device: str = "cpu"):
             f"Could not load tokenizer from '{model_id}'. "
             f"Is it a valid HF model or local path? Error: {e}")
 
-    # Load model with optional quantization config.
+    # Load model with optional quantization config. bitsandbytes is CUDA-only,
+    # so on MPS/CPU the weights load unquantized no matter what was asked for.
     kwargs = {"torch_dtype": torch.bfloat16}
-    if quant in ("4bit", "8bit") and have("bitsandbytes") and device.startswith("cuda"):
+    want_quant = quant in ("4bit", "8bit")
+    can_quant = want_quant and have("bitsandbytes") and device.startswith("cuda")
+    if can_quant:
         from transformers import BitsAndBytesConfig
         kwargs["quantization_config"] = BitsAndBytesConfig(
             load_in_4bit=(quant == "4bit"),
@@ -87,6 +90,13 @@ def load_for_training(model_id: str, quant: str = "none", device: str = "cpu"):
             bnb_4bit_quant_type="nf4",
             bnb_4bit_use_double_quant=True,
         )
+    elif want_quant:
+        why = ("bitsandbytes is not installed"
+               if not have("bitsandbytes") else
+               f"bitsandbytes needs CUDA and this run is on {device}")
+        log(f"--quant {quant} requested but ignored: {why}. "
+            f"Training in bf16 instead; use the MLX path on Apple Silicon "
+            f"for memory-efficient 4-bit training.")
 
     try:
         model = AutoModelForCausalLM.from_pretrained(model_id, **kwargs)
@@ -94,6 +104,10 @@ def load_for_training(model_id: str, quant: str = "none", device: str = "cpu"):
         raise ValueError(
             f"Could not load model from '{model_id}'. Error: {e}")
 
+    # Whether the weights are ACTUALLY quantized, which is not the same as
+    # whether the user asked. The caller needs this to decide on .to(device):
+    # quantized weights are already placed, unquantized ones are not.
+    model._rayllm_quantized = can_quant
     return model, tokenizer
 
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rayllm-orchestrator"
-version = "0.3.1"
+version = "0.3.2"
 description = "Fine-tune and serve small LLMs on your laptop"
 readme = "README.md"
 license = {text = "MIT"}

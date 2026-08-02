@@ -110,13 +110,16 @@ def _train_mlx(m, dataset, epochs, ckpt_dir, opt, max_len=1024, max_examples=Non
 def build_model_and_tokenizer(cfg: dict, device: str):
     import torch
     model, tok = models.load_for_training(cfg["hf"], quant=cfg["quant"], device=device)
+    # Did the weights actually load quantized? Asking for --quant isn't enough:
+    # bitsandbytes is CUDA-only, so the request is silently dropped elsewhere.
+    # Read this before any wrapper hides the attribute.
+    quantized = getattr(model, "_rayllm_quantized", False)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
     if cfg["use_lora"]:
         from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-        # If model is quantized (4bit/8bit), prep it for LoRA.
-        if cfg["quant"] in ("4bit", "8bit"):
+        if quantized:
             model = prepare_model_for_kbit_training(model)
         lcfg = LoraConfig(
             r=16, lora_alpha=32, lora_dropout=0.05, bias="none",
@@ -126,8 +129,9 @@ def build_model_and_tokenizer(cfg: dict, device: str):
         model = get_peft_model(model, lcfg)
         model.print_trainable_parameters()
 
-    # Move to device (quantized models are already on device).
-    if cfg["quant"] not in ("4bit", "8bit"):
+    # bitsandbytes places quantized weights itself; everything else still needs
+    # moving, or the model sits on CPU while the batches arrive on the GPU.
+    if not quantized:
         model = model.to(device)
     model.config.use_cache = False
     return model, tok

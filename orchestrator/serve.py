@@ -365,7 +365,8 @@ def _serve_llama_cpp(model_path: str, port: int, host: str) -> int:
 # transformers backend with real dynamic micro-batching
 # --------------------------------------------------------------------------- #
 class _BatchEngine:
-    def __init__(self, model_path, device, batching=True, window=0.03, max_batch=8):
+    def __init__(self, model_path, device, batching=True, window=0.03, max_batch=8,
+                 max_len=2048):
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -375,12 +376,19 @@ class _BatchEngine:
         self.tok = AutoTokenizer.from_pretrained(model_path)
         if self.tok.pad_token is None:
             self.tok.pad_token = self.tok.eos_token
+        # Decoder-only models must be LEFT-padded for batched generation. With
+        # right padding the model continues from pad tokens instead of from the
+        # end of the prompt, which corrupts every row whose prompt is shorter
+        # than the batch maximum. Left padding also puts the generated region at
+        # the same index for every row, so the slice in _run_batch is valid.
+        self.tok.padding_side = "left"
         dtype = torch.float32 if device == "cpu" else torch.bfloat16
         self.model = AutoModelForCausalLM.from_pretrained(
             model_path, torch_dtype=dtype).to(device).eval()
         self.batching = batching
         self.window = window
         self.max_batch = max_batch
+        self.max_len = max_len
         self.q: queue.Queue = queue.Queue()
         self._served = 0
         threading.Thread(target=self._worker, daemon=True).start()
@@ -404,9 +412,17 @@ class _BatchEngine:
                 if timeout <= 0:
                     break
                 try:
-                    batch.append(self.q.get(timeout=timeout))
+                    nxt = self.q.get(timeout=timeout)
                 except queue.Empty:
                     break
+                # generate() applies one sampling config to the whole batch, so
+                # a request with a different temperature can't ride along -- it
+                # would silently be answered at someone else's temperature.
+                # Put it back and let it open the next batch.
+                if nxt["temperature"] != first["temperature"]:
+                    self.q.put(nxt)
+                    break
+                batch.append(nxt)
             self._run_batch(batch)
 
     def _run_batch(self, batch):
@@ -415,19 +431,19 @@ class _BatchEngine:
         max_new = max(b["max_tokens"] for b in batch)
         temp = batch[0]["temperature"]
         enc = self.tok(prompts, return_tensors="pt", padding=True,
-                       truncation=True, max_length=2048).to(self.device)
-        t0 = time.time()
+                       truncation=True, max_length=self.max_len).to(self.device)
         with torch.no_grad():
             out = self.model.generate(
                 **enc, max_new_tokens=max_new,
                 do_sample=temp > 0, temperature=max(temp, 1e-5),
                 pad_token_id=self.tok.pad_token_id)
+        # Left padding makes the prompt region the same width for every row.
         gen = out[:, enc["input_ids"].shape[1]:]
-        texts = self.tok.batch_decode(gen, skip_special_tokens=True)
-        new_tokens = int((gen != self.tok.pad_token_id).sum().item())
-        dt = time.time() - t0
         self._served += len(batch)
-        for b, text in zip(batch, texts):
+        for b, row in zip(batch, gen):
+            # The batch generated max_new tokens for everyone; give each caller
+            # only the max_tokens it actually asked for.
+            text = self.tok.decode(row[: b["max_tokens"]], skip_special_tokens=True)
             b["out"] = text.strip()
             b["event"].set()
 
@@ -438,7 +454,8 @@ def _serve_transformers(model, quant, port, host, max_model_len, batching) -> in
 
     device = ("cuda" if torch.cuda.is_available() else
               "mps" if torch.backends.mps.is_available() else "cpu")
-    engine = _BatchEngine(model, device, batching=batching)
+    engine = _BatchEngine(model, device, batching=batching,
+                          max_len=_clamp_ctx(model, max_model_len))
 
     def render_chat(messages):
         if len(messages) == 1 and messages[0].get("role") == "user":
