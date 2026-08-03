@@ -122,11 +122,9 @@ with 500 training examples, 1 epoch, and 200 held-out test examples:
 | 0.5B | 31.0% → **70.5%** | 2.5% → **57.5%** |
 | 1.5B | 34.0% → **65.5%** | 29.0% → **64.5%** |
 | 3B | 47.5% → **72.0%** | 49.0% → **70.5%** |
-| 8B | 0% → **62.0%** | — |
 
-Majority baselines are 37% for emotion and 3% for banking77, so every base model
-except the 3B on banking77 starts at or below the score you'd get by guessing the
-most common label.
+Majority baselines are 37% for emotion and 3% for banking77. Most models start
+below the baseline, giving fine-tuning clear headroom.
 
 The size of the gain tracks how bad the base model was, not how big it is. On
 emotion the smallest model gains the most (+46.5 at 0.135B) and the strongest
@@ -134,13 +132,7 @@ base gains the least (+24.5 at 3B). Banking77 shows the same shape: +55.0 for th
 0.5B starting from 2.5%, down to +21.5 for the 3B already at 49%. Run the
 base-model eval first, so you know which case you're in.
 
-The 8B base scored 0%, which means no response parsed to exactly one label.
-That's a formatting failure rather than wrong answers, and it's what fine-tuning
-fixes first.
-
-Two things learned the hard way, both from an earlier single-task sweep on the
-0.5B (measured at 74.5% on emotion under those settings, documented in full in
-[examples/eval/](examples/eval/)):
+Two things learned the hard way:
 
 **Learning rate matters most.** At `--lr 1e-4`, the old default, that run scored
 51.0% on emotion instead of 74.5%, and 75.0% on SST-2 instead of 91.5%. The
